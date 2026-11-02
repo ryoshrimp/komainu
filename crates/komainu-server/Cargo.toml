@@ -1,0 +1,13 @@
+[package]
+name = "komainu-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "komainu-server"
+path = "src/main.rs"
+
+[lints]
+workspace = true
