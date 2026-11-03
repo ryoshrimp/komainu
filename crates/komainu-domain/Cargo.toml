@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 ddd-toolkit = { workspace = true, features = ["serde", "serde_with"] }
 thiserror = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 serde = { workspace = true, features = ["derive"] }
