@@ -23,7 +23,7 @@
 /// let error = DomainError::Expired;
 /// assert!(matches!(error, DomainError::Expired));
 /// ```
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DomainError {
     /// **English:**<br>
     /// Text is empty where a non-empty value is required.
@@ -39,6 +39,13 @@ pub enum DomainError {
     /// テキストに禁止された制御文字が含まれています。
     #[error("text must not contain control characters")]
     ControlCharacter,
+    /// **English:**<br>
+    /// Text contains a prohibited whitespace character.
+    ///
+    /// **日本語:**<br>
+    /// テキストに禁止された空白文字が含まれています。
+    #[error("text must not contain whitespace characters")]
+    WhitespaceCharacter,
     /// **English:**<br>
     /// A scope value does not satisfy the required syntax.
     ///
