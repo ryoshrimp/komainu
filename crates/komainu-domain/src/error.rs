@@ -264,6 +264,20 @@ pub enum DomainError {
     #[error("timestamps are not in the required chronological order")]
     TimeOrder,
     /// **English:**<br>
+    /// A duration is zero where a positive duration is required.
+    ///
+    /// **日本語:**<br>
+    /// 正の期間が必要な箇所に、ゼロの期間が指定されています。
+    #[error("duration must be positive")]
+    InvalidDuration,
+    /// **English:**<br>
+    /// A value is outside the permitted range.
+    ///
+    /// **日本語:**<br>
+    /// 値が許容範囲外です。
+    #[error("value is out of range")]
+    OutOfRange,
+    /// **English:**<br>
     /// An arithmetic operation exceeded the representable range.
     ///
     /// **日本語:**<br>

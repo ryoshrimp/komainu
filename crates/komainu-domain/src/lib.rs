@@ -28,4 +28,11 @@ pub mod error;
 /// 構築時と Serde のデシリアライズ時に正規化せず検証し、
 /// シリアライズ時には文字列を出力します。検証エラーと使用例は各型を参照してください。
 pub mod ids;
+/// **English:**<br>
+/// Validated time values, including positive millisecond durations.
+///
+/// **日本語:**<br>
+/// 正のミリ秒単位の期間など、検証済みの時間値を提供します。
+pub mod time;
+
 mod shared;

@@ -44,3 +44,16 @@ pub fn validate_non_control_character(s: &str) -> Result<(), DomainError> {
         Ok(())
     }
 }
+
+/// **English:**<br>
+/// Accepts `a <= b`, including equality; otherwise returns [`DomainError::OutOfRange`].
+///
+/// **日本語:**<br>
+/// 等値を含む `a <= b` を受理し、それ以外は [`DomainError::OutOfRange`] を返します。
+pub fn validate_less_than_or_equal<T: Ord>(a: T, b: T) -> Result<(), DomainError> {
+    if a <= b {
+        Ok(())
+    } else {
+        Err(DomainError::OutOfRange)
+    }
+}
