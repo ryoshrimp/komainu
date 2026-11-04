@@ -1,4 +1,4 @@
-use crate::error::DomainError;
+use crate::{error::DomainError, secret::SecretKind};
 
 /// **English:**<br>
 /// Returns [`DomainError::EmptyText`] if `s` is empty after [`str::trim`].
@@ -55,5 +55,20 @@ pub fn validate_less_than_or_equal<T: Ord>(a: T, b: T) -> Result<(), DomainError
         Ok(())
     } else {
         Err(DomainError::OutOfRange)
+    }
+}
+
+/// **English:**<br>
+/// Accepts matching secret categories; returns [`DomainError::WrongSecretKind`] if `a != b`.
+/// Does not inspect or compare secret bytes.
+///
+/// **日本語:**<br>
+/// 一致する秘密値の種別を受理し、`a != b` なら [`DomainError::WrongSecretKind`] を返します。
+/// 秘密値のバイト列の検査や比較は行いません。
+pub fn validate_digest_kind(a: &SecretKind, b: &SecretKind) -> Result<(), DomainError> {
+    if a == b {
+        Ok(())
+    } else {
+        Err(DomainError::WrongSecretKind)
     }
 }

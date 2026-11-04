@@ -1,14 +1,16 @@
 //! **English:**<br>
-//! Validated domain identifiers, time values, and OAuth request values and policies.
+//! Validated domain identifiers, time values, OAuth policies, and categorized secrets.
 //!
 //! See [`ids`] for string identifiers, [`time`] for durations, [`scope`] for scope and
-//! redirect resolution, and [`error::DomainError`] for validation and operation failures.
+//! redirect resolution, [`secret`] for raw secrets and typed digests, and
+//! [`error::DomainError`] for validation and operation failures.
 //!
 //! **日本語:**<br>
-//! 検証済みのドメイン識別子、時間値、OAuth リクエストの値とポリシーを提供します。
+//! 検証済みのドメイン識別子、時間値、OAuth ポリシー、種別付きの秘密値を提供します。
 //!
 //! 文字列識別子は [`ids`]、期間は [`time`]、スコープとリダイレクトの解決は [`scope`]、
-//! 検証失敗や操作の拒否は [`error::DomainError`] を参照してください。
+//! 生の秘密値と型付きダイジェストは [`secret`]、検証失敗や操作の拒否は
+//! [`error::DomainError`] を参照してください。
 
 /// **English:**<br>
 /// Domain failures represented by [`error::DomainError`].
@@ -53,5 +55,26 @@ pub mod time;
 /// トークンエンドポイントでの使用を検証します。[`scope::OAuthState`] は構文のみを検証し、
 /// state 値の生成と対応関係の確認は呼び出し元が行う必要があります。
 pub mod scope;
+
+/// **English:**<br>
+/// Categorized 32-byte secrets, digests, and wrappers that validate digest categories.
+///
+/// [`secret::SecretValue`] stores raw secret bytes; [`secret::Digest`] stores supplied
+/// digest bytes and compares them with `subtle` while also requiring equal categories.
+/// The six typed digest wrappers reject mismatched [`secret::SecretKind`] tags during
+/// construction and deserialization. None of these types generates randomness or
+/// computes a hash. Digest bytes are visible through `Debug` and Serde; raw secret
+/// bytes require an explicit call to [`secret::SecretValue::expose_bytes`].
+///
+/// **日本語:**<br>
+/// 種別付きの32バイトの秘密値、ダイジェスト、種別を検証するラッパーを提供します。
+///
+/// [`secret::SecretValue`] は生の秘密値を、[`secret::Digest`] は渡されたダイジェストを保持します。
+/// 後者は `subtle` でバイト列を比較し、種別の一致も要求します。
+/// 6種類の型付きダイジェストは、構築時とデシリアライズ時に
+/// [`secret::SecretKind`] の不一致を拒否します。いずれの型も乱数生成やハッシュ計算は行いません。
+/// ダイジェストは `Debug` と Serde でバイト列を公開し、生の秘密値のバイト列へのアクセスには
+/// [`secret::SecretValue::expose_bytes`] の明示的な呼び出しが必要です。
+pub mod secret;
 
 mod shared;

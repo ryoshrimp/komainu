@@ -12,7 +12,8 @@ workspace = true
 ddd-toolkit = { workspace = true, features = ["serde", "serde_with"] }
 thiserror = { workspace = true }
 url = { workspace = true }
+subtle = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
-serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
