@@ -1,0 +1,17 @@
+[package]
+name = "komainu-application"
+description = "Use cases and ports of the komainu OAuth 2.0 authorization server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+komainu-domain.workspace = true
+time.workspace = true
+uuid.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

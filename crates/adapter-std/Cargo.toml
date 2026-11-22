@@ -1,0 +1,18 @@
+[package]
+name = "komainu-adapter-std"
+description = "Clock, CSPRNG and password hashing adapters for komainu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+komainu-application.workspace = true
+komainu-domain.workspace = true
+time.workspace = true
+rand.workspace = true
+argon2.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+
+[lints]
+workspace = true

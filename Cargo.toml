@@ -1,0 +1,81 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/domain",
+    "crates/application",
+    "crates/adapter-postgres",
+    "crates/adapter-std",
+    "crates/testing",
+    "crates/http",
+    "crates/server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ryoshrimp/komainu"
+
+[workspace.dependencies]
+# Internal crates
+komainu-domain = { path = "crates/domain" }
+komainu-application = { path = "crates/application" }
+komainu-adapter-postgres = { path = "crates/adapter-postgres" }
+komainu-adapter-std = { path = "crates/adapter-std" }
+komainu-testing = { path = "crates/testing" }
+komainu-http = { path = "crates/http" }
+
+# DDD building blocks (only komainu-domain depends on it)
+ddd-toolkit = { version = "0.5", default-features = false }
+
+# Web
+axum = { version = "0.8", features = ["form", "query"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["trace", "request-id", "limit"] }
+askama = "0.16"
+http-body-util = "0.1"
+
+# Database
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "uuid", "time", "json", "migrate"] }
+
+# Crypto and randomness
+argon2 = "0.6"
+sha2 = "0.11"
+rand = "0.10"
+subtle = "2"
+base64 = "0.23"
+
+# Data types
+time = "0.3"
+uuid = "1"
+url = "2"
+form_urlencoded = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Runtime, CLI, configuration
+tokio = "1"
+clap = { version = "4", features = ["derive", "env"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Test-only
+testcontainers-modules = { version = "0.15", features = ["postgres"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "cookies"] }
+assert_cmd = "2"
+predicates = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"

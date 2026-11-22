@@ -1,0 +1,29 @@
+[package]
+name = "komainu-adapter-postgres"
+description = "PostgreSQL adapter for komainu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Enables integration tests that start PostgreSQL with testcontainers.
+pg-tests = []
+
+[dependencies]
+komainu-application.workspace = true
+komainu-domain.workspace = true
+sqlx.workspace = true
+time.workspace = true
+uuid.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+komainu-adapter-std.workspace = true
+komainu-testing.workspace = true
+testcontainers-modules.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
