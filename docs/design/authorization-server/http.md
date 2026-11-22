@@ -121,7 +121,7 @@ Cookie `komainu_session` があれば `logout` を呼び、`komainu_session` を
 ### POST /token
 
 1. `Content-Type` が `application/x-www-form-urlencoded`（`; charset=` などの引数は許す）でなければ `invalid_request`。
-2. ボディを `(String, String)` の列にする。`client_id` と `client_secret` を取り出し、残りを `TokenRequest::from_pairs` に渡す。`client_id` か `client_secret` が 2 回出てくれば `invalid_request`。
+2. ボディを `(String, String)` の列にする。`client_id` と `client_secret` を取り出し（`client_secret` は取り出した直後に `Secret::new` で包み、`String` のまま持ち回らない）、残りを `TokenRequest::from_pairs` に渡す。`client_id` か `client_secret` が 2 回出てくれば `invalid_request`。
 3. `Authorization` ヘッダーを見て `ClientAuthentication` を決める。
 
 | 条件 | 結果 |
@@ -205,6 +205,8 @@ Pragma: no-cache
 ## 画面
 
 `crates/http/templates/` に askama のテンプレートを置く。すべて `base.html` を継承し、`<meta name="viewport">` と最小限のインライン CSS だけを持つ（外部の CSS・JS・画像を読まない）。
+
+テンプレートの構造体は CSRF トークンの平文を `String` で持つので、`Debug` を derive しない（N-3）。`askama::Template` だけを derive する。
 
 | ファイル | 構造体 | フィールド |
 |---|---|---|

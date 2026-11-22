@@ -8,13 +8,13 @@
 
 ### 依存
 
-`ddd-toolkit = "0.4"`（features: `derive`、`serde`。`serde` は server の設定で `Secret<String>` を deserialize するため。server は ddd-toolkit に直接依存せず、`komainu_domain::Secret` を使う）、`time = "0.3"`、`uuid = "1"`（`v7` は使わず、型としてだけ使う）、`url = "2"`、`sha2 = "0.11"`、`subtle = "2"`、`thiserror = "2"`、`zeroize = "1"`。
+`ddd-toolkit = { workspace = true, features = ["derive", "secret", "serde"] }`（workspace 側は `default-features = false`。README T1。`secret` は `Secret<T>` のため。`serde` は server の設定で `Secret<String>` を deserialize するため。`cqrs`、`event_sourcing`、`delivery`、`process` は使わないので有効にしない。server は ddd-toolkit に直接依存せず、`komainu_domain::Secret` を使う）、`time = "0.3"`、`uuid = "1"`（`v7` は使わず、型としてだけ使う）、`url = "2"`、`sha2 = "0.11"`、`subtle = "2"`（`TokenHash::ct_eq` 用）、`thiserror = "2"`。`zeroize` は `Secret` が `secret` feature で引き込むので、直接は依存しない。
 
 ### モジュール構成
 
 ```
 crates/domain/src/
-  lib.rs                // 下のモジュールを pub mod で公開し、`pub use ddd_toolkit::Secret;` で再エクスポートする
+  lib.rs                // 下のモジュールを pub mod で公開し、`pub use ddd_toolkit::secret::Secret;` と `pub use ddd_toolkit::AggregateRoot;` で再エクスポートする（`Secret` は 0.5.0 で crate ルートから `secret` モジュールに移った。`AggregateRoot` は application が `pull_events()` を呼ぶためのトレイト）
   error.rs              // DomainError
   shared/               // 共通の値オブジェクト
     mod.rs  client_id.rs  subject.rs  scope.rs  redirect_uri.rs  state.rs  token.rs
@@ -31,11 +31,13 @@ crates/domain/src/
 ### 共通の方針
 
 - 値オブジェクトの作り方は、下の表の「実装」列に従う。
-  - **derive**: ddd-toolkit の `#[derive(ValueObject)]` で作る。検証が要るものは `#[value_object(validate = .., error = DomainError)]` を付け、`try_new` で作る。derive は `Debug`、`Clone`、`PartialEq`、`Eq`、`Hash` を値に基づいて自動で実装するので、これらを二重に derive しない。
-  - **手書き**: `ValueObject` derive を使わず、表と下の節に書いたメソッドと、指定したトレイトを手で実装する。`Debug` に平文を出さない型や、中身が `Secret` で `Hash` を持てない型がこれに当たる。
+  - **derive**: ddd-toolkit の `#[derive(ValueObject)]` で作る。中身が 1 つのタプル構造体（例: `pub struct ClientId(String);`）にする。検証が要るものは `#[value_object(validate = .., error = DomainError)]` を付け、`try_new` で作る。validator は `fn(&Self) -> Result<(), DomainError>` の形で、組み立て済みの値を受け取り、中身は `value.0` で読む（例: `fn validate_client_id(value: &ClientId) -> Result<(), DomainError>`）。validator は検証だけをし、値を変えられない。derive は `Debug`、`Clone`、`PartialEq`、`Eq`、`Hash` を値に基づいて自動で実装するので、これらを二重に derive しない。`Debug` は型名を含む（`ClientId("abc")`）。derive 行には `ValueObject` のほか、表で指定した std の `Copy` と、Ord 列が ✓ のときの `PartialOrd`・`Ord` だけを並べる（例: `#[derive(ValueObject, Copy, PartialOrd, Ord)] pub struct UserId(uuid::Uuid);`。`Clone` などを足すと二重実装でコンパイルエラーになる）。
+  - `Secret<T>` は `Clone` も `PartialEq` も実装しないので、`Secret` を中に持つ型には `ValueObject` derive を使えない（derive が `Clone` を生成してコンパイルエラーになる）。同じ理由で、`Secret` を持つ構造体・enum に `Clone`、`PartialEq`、`Eq`、`Hash` を derive しない。比較が要るときは `Secret::ct_eq`（定数時間）か、`expose_secret_ref()` で取り出した値を比べる。
+  - **手書き**: `ValueObject` derive を使わず（`ValueObject` トレイトも実装せず、`trait_only` も使わない）、表と下の節に書いたメソッドと、指定したトレイトを手で実装する。`Debug` に平文を出さない型や、中身が `Secret` で `Hash` を持てない型がこれに当たる。
   - 「Ord」列が ✓ の型には、標準の `#[derive(PartialOrd, Ord)]` も付ける（`BTreeMap` のキーや一覧の並び順に使う）。並び順は中身の値の順（`String` はバイト順、`Uuid` はバイト順、`[u8; 32]` は辞書順）。
 - 集約の ID のアクセサは、ddd-toolkit の `#[derive(Entity)]` が `#[entity(id)]` のフィールドから生成する `pub fn id(&self) -> &Id` だけを使う。下のシグネチャに `id()` は書かない（同じ名前で手書きするとコンパイルエラーになる）。`Copy` な ID（`UserId` など）は呼び出し側で `*x.id()` とする。
-- 集約は `#[derive(Entity, AggregateRoot)]` で作る。イベントは集約ごとに 1 つの enum（`#[derive(DomainEvent)]`）にまとめ、`#[aggregate(events)] events: Vec<XxxEvent>` に積む。application がコミットの前に `pull_events()` で取り出す。
+- 集約は `Entity` と `AggregateRoot` の derive で作る（derive の組み合わせは次の項目）。イベントは集約ごとに 1 つの enum（`DomainEvent` の derive）にまとめ、`#[aggregate(events)] events: Vec<XxxEvent>` に積む。application がコミットの前に `pull_events()` で取り出す（`pull_events` は `AggregateRoot` トレイトのメソッドとしてだけ生成されるので、application は `use komainu_domain::AggregateRoot;` する）。
+- derive の組み合わせ: 集約は `#[derive(Debug, Entity, AggregateRoot)]`（`Entity` は `Debug` を生成しない。id による `PartialEq`・`Eq`・`Hash` は `Entity` が生成する）。イベント enum は `#[derive(Debug, Clone, PartialEq, Eq, DomainEvent)]`。`XxxRecord` は `#[derive(Debug, Clone, PartialEq, Eq)]`。
 - 集約のフィールドは非公開にする。永続化のために、集約ごとに全フィールドを `pub` で持つ `XxxRecord` 構造体を用意し、次の 2 つを提供する。
   - `pub fn to_record(&self) -> XxxRecord`
   - `pub fn from_record(record: XxxRecord) -> Self`（DB から復元する。イベントは積まない。Record の各フィールドはすでに検証済みの型なので、ここでは検証しない）
@@ -51,7 +53,7 @@ crates/domain/src/
 | `ClientName` | `String` | 1〜100 文字（`char` 単位）、制御文字を含まない | derive | | |
 | `Subject` | `String` | 1〜255 バイト、制御文字を含まない | derive | ✓ | |
 | `UserId` | `uuid::Uuid` | なし（`new`） | derive（`Copy` も付ける） | ✓ | `Subject` への変換は `Subject::from(UserId)`（ハイフン付き小文字） |
-| `Username` | `String` | 3〜64 文字、`[A-Za-z0-9._-]` だけ。ASCII 小文字に変換してから保持する | derive | ✓ | 一意性は大文字小文字を区別しない |
+| `Username` | `String` | 3〜64 文字、`[A-Za-z0-9._-]` だけ。ASCII 小文字に変換してから保持する | 手書き: `try_new(String) -> Result<Username, DomainError>`（ASCII 小文字に変換してから検証する）、`as_str(&self) -> &str`。標準の `#[derive(Debug, Clone, PartialEq, Eq, Hash)]` を付ける。derive の validator は値を変えられないため手書きにする | ✓ | 一意性は大文字小文字を区別しない |
 | `Password` | `Secret<String>` | 1〜128 文字（`char` 単位） | 手書き: `try_new(Secret<String>) -> Result<Password, DomainError>`、`expose(&self) -> &str`、`Debug`（`Password([REDACTED])`）。`Clone` は実装しない | | 8 文字以上という登録時の規則は `Password` ではなく `NewPassword`（次の行）が持つ |
 | `NewPassword` | `Password` | `Password` の検証に加えて 8 文字以上 | 手書き: `try_new(Secret<String>)`、`as_password(&self) -> &Password`、`Debug`（`NewPassword([REDACTED])`） | | ユーザー作成とパスワード変更でだけ使う |
 | `PasswordHash` | `String` | 空でない（PHC 文字列形式は adapter の責任） | derive | | |
@@ -114,7 +116,7 @@ impl TokenHash {
 }
 ```
 
-列挙型（`Copy`、`Eq`、`Hash`、`Ord`）。文字列との変換は `as_str()` と `FromStr` で行い、文字列表現は RFC の値（括弧内）とする。
+列挙型は `#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]` を付ける（`ValueObject` derive は使わない）。文字列との変換は `as_str()` と `FromStr` で行い、`FromStr::Err` は `DomainError`（知らない値なら `InvalidValue { field: <型名の snake_case>, reason: "unknown value" }`）とする。文字列表現は RFC の値（括弧内）とする。
 
 | 型 | 値 |
 |---|---|
@@ -476,10 +478,13 @@ Grant の失効は、アクセストークンとリフレッシュトークン�
 - 失効した Grant に `AccessToken::issue` すると `InvalidState` を返す。
 - ローテーション済みのリフレッシュトークンに `rotate` すると `Replayed` を返す。
 - `Consent({read})` について、`covers({read})` は `true`、`covers({read, write})` は `false`。`extend({write})` の後は `covers({read, write})` が `true` になる。
-- `TokenHash` の `Debug` 出力は 8 文字の 16 進数と `…` だけで、32 バイト全部は出ない。
-- `OpaqueToken`、`Password`、`NewPassword` の `Debug` 出力に平文が含まれず、`[REDACTED]` が含まれる。
+- 先頭 4 バイトが `01 23 ab cd`、残り 28 バイトが 0 の配列（`let mut b = [0u8; 32]; b[..4].copy_from_slice(&[0x01, 0x23, 0xab, 0xcd]);`）を `TokenHash::from_bytes(b)` に渡したときの `Debug` 出力は `TokenHash(0123abcd…)` と完全に一致する。
+- `OpaqueToken`、`Password`、`NewPassword` の `Debug` 出力は、それぞれ `OpaqueToken([REDACTED])`、`Password([REDACTED])`、`NewPassword([REDACTED])` と完全に一致する（`f.debug_tuple("Password").field(&self.0).finish()` のように中の `Secret` の `Debug` を使う）。
 
 ## 実装メモ
 
-- ddd-toolkit 0.4.7 の `Secret<T>` で使える API は `new`、`as_inner(&self) -> &T`、`into_inner(self) -> T`、`expose_secret(&self, f)` だけ。`Password::expose` と `OpaqueToken::expose` は `as_inner()` で実装する。改修版（Unreleased）では `expose_secret_ref` などが増え、`Secret` の `Clone` がなくなる。domain は `Secret` を `Clone` しない前提で書いておけば、追従のときに直すのは `expose` の中だけで済む（README の Q-1）。
+- ddd-toolkit 0.5.0 の `Secret<T>`（`T: Zeroize`）で使う API は `new(T)`、`expose_secret_ref(&self) -> &T`、`into_exposed_secret(self) -> T`、`expose_secret(&self, f)`、`clone_secret(&self) -> Self`（`T: Clone`）、`ct_eq(&self, &Self) -> bool`（`T: AsRef<[u8]>`、長さが違えばすぐ `false`）。0.4.7 の `as_inner` と `into_inner` はなくなった。`Password::expose` と `OpaqueToken::expose` は `expose_secret_ref()` で実装する。
+- `Secret` は `Clone`、`PartialEq`、`Eq` を実装しない。テストで `assert_eq!` に `Secret` を渡さず、`expose_secret_ref()` の値で比べる。複製が要るときは `clone_secret()` を使うが、komainu では使う場面を作らない（server の設定は move で渡す。[server.md §設定](server.md#設定)）。
+- 版の組は ddd-toolkit 0.5.0 = ddd-toolkit-core 0.5.0 + ddd-toolkit-macro 0.6.0。`Secret` の変更は core 0.5.0、validator が `&Self` を受け取ることと enum の制限と `Debug` の形は macro 0.6.0 の変更なので、CHANGELOG はそれぞれの crate のものを見る。
+- `#[derive(ValueObject)]` を enum に付けるときは `validate` と `error` を使えない（macro 0.6.0 でコンパイルエラー）。komainu の列挙型（`ClientType` など）は `ValueObject` derive を使わず、標準の derive と手書きの `as_str()`・`FromStr` で作る。
 - `Secret` の `Debug` は `[REDACTED]` を出す。手書きの `Debug` もこの文字列に揃える。

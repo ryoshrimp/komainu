@@ -17,7 +17,8 @@ port の実装を 3 つの crate に分ける。
 依存: `komainu-application`、`komainu-domain`、`sqlx = "0.9"`（features は README §3.1）、`time`、`uuid`、`serde_json = "1"`、`thiserror`。dev-dependencies: `komainu-adapter-std`、`komainu-testing`、`testcontainers-modules = "0.15"`（`postgres`）、`tokio`（`macros`, `rt-multi-thread`）。feature `pg-tests` を有効にしたときだけ結合テストを動かす（`#![cfg(feature = "pg-tests")]`）。
 
 ```rust
-#[derive(Debug, Clone)]
+/// Not Clone: Secret<String> does not implement Clone (ddd-toolkit 0.5).
+#[derive(Debug)]
 pub struct PgStoreConfig {
     /// postgres://... (never logged)
     pub url: Secret<String>,
