@@ -3,6 +3,7 @@
 use komainu_application::{BoxFuture, GrantRepository, StoreError};
 use komainu_domain::*;
 use sqlx::postgres::PgRow;
+use std::str::FromStr;
 use time::OffsetDateTime;
 
 use crate::codec::{col, hash_from_db, hash_to_db, scope_from_db, scope_to_db, valid};
@@ -14,25 +15,6 @@ macro_rules! columns {
         "id, client_id, subject, scope, origin, origin_code_hash, status, revoked_at, \
          revocation_reason, created_at"
     };
-}
-
-fn reason_to_db(reason: RevocationReason) -> &'static str {
-    match reason {
-        RevocationReason::CodeReplay => "code_replay",
-        RevocationReason::RefreshTokenReplay => "refresh_token_replay",
-        RevocationReason::ClientDisabled => "client_disabled",
-        RevocationReason::UserDisabled => "user_disabled",
-    }
-}
-
-fn reason_from_db(value: &str) -> Result<RevocationReason, StoreError> {
-    match value {
-        "code_replay" => Ok(RevocationReason::CodeReplay),
-        "refresh_token_replay" => Ok(RevocationReason::RefreshTokenReplay),
-        "client_disabled" => Ok(RevocationReason::ClientDisabled),
-        "user_disabled" => Ok(RevocationReason::UserDisabled),
-        _ => Err(corrupted("grants.revocation_reason")),
-    }
 }
 
 /// Column values of a grant that do not map one to one.
@@ -54,7 +36,7 @@ fn split(r: &GrantRecord) -> Split<'_> {
     let (status, revoked_at, reason) = match r.status {
         GrantStatus::Active => ("active", None, None),
         GrantStatus::Revoked { revoked_at, reason } => {
-            ("revoked", Some(revoked_at), Some(reason_to_db(reason)))
+            ("revoked", Some(revoked_at), Some(reason.as_str()))
         }
     };
     Split {
@@ -85,7 +67,8 @@ fn from_row(row: &PgRow) -> Result<Grant, StoreError> {
         ("active", None, None) => GrantStatus::Active,
         ("revoked", Some(revoked_at), Some(reason)) => GrantStatus::Revoked {
             revoked_at,
-            reason: reason_from_db(&reason)?,
+            reason: RevocationReason::from_str(&reason)
+                .map_err(|_| corrupted("grants.revocation_reason"))?,
         },
         _ => return Err(corrupted("grants.status")),
     };

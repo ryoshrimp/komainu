@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 use crate::consent::ConsentPage;
 use crate::cookies::{self, CSRF_COOKIE, SESSION_COOKIE};
-use crate::form::{Form, parse_request_id};
+use crate::form::parse_request_id;
 use crate::metrics::count_authorization_request;
 use crate::middleware::Ctx;
 use crate::state::AppState;
@@ -206,9 +206,6 @@ pub(crate) async fn authorize_post(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if Form::parse(&headers, &body).is_none() {
-        return bad_request(NonRedirectableError::RequestNotFound);
-    }
     let pairs = form_urlencoded::parse(&body).into_owned().collect();
     start(&state, &ctx, &headers, pairs).await
 }
@@ -228,6 +225,7 @@ pub(crate) async fn resume(
         .ok()
         .and_then(|Query(query)| parse_request_id(&query.request_id))
     else {
+        count_authorization_request("error_page");
         return bad_request(NonRedirectableError::RequestNotFound);
     };
     let session = cookies::token(&headers, SESSION_COOKIE);

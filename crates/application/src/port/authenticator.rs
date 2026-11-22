@@ -11,7 +11,7 @@ pub struct LoginCredentials {
     pub password: Secret<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum AuthenticationOutcome {
     Authenticated(Subject),
     InvalidCredentials,

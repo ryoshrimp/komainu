@@ -1,16 +1,40 @@
-use ddd_toolkit::ValueObject;
+use std::hash::{Hash, Hasher};
 
 use crate::error::DomainError;
 
 /// An absolute redirection URI without fragment (RFC 6749 §3.1.2).
 ///
 /// Equality is exact comparison of the original string; nothing is normalized.
-#[derive(ValueObject)]
-#[value_object(validate = validate_redirect_uri, error = DomainError)]
-pub struct RedirectUri(String);
+///
+/// Hand-written instead of `#[derive(ValueObject)]` so the parsed form can be kept next to the
+/// original string, which lets `scheme()` and `host()` return `&str`.
+#[derive(Clone)]
+pub struct RedirectUri {
+    raw: String,
+    parsed: url::Url,
+}
 
-fn validate_redirect_uri(value: &RedirectUri) -> Result<(), DomainError> {
-    let s = &value.0;
+impl PartialEq for RedirectUri {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw == other.raw
+    }
+}
+
+impl Eq for RedirectUri {}
+
+impl Hash for RedirectUri {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.raw.hash(state);
+    }
+}
+
+impl std::fmt::Debug for RedirectUri {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("RedirectUri").field(&self.raw).finish()
+    }
+}
+
+fn parse_redirect_uri(s: &str) -> Result<url::Url, DomainError> {
     if s.len() > 2000 {
         return Err(DomainError::invalid(
             "redirect_uri",
@@ -31,32 +55,31 @@ fn validate_redirect_uri(value: &RedirectUri) -> Result<(), DomainError> {
             "whitespace or control character",
         ));
     }
-    url::Url::parse(s).map_err(|_| DomainError::invalid("redirect_uri", "not an absolute URI"))?;
-    Ok(())
+    url::Url::parse(s).map_err(|_| DomainError::invalid("redirect_uri", "not an absolute URI"))
 }
 
 impl RedirectUri {
+    /// Validates `raw` and keeps it unchanged.
+    pub fn try_new(raw: String) -> Result<Self, DomainError> {
+        let parsed = parse_redirect_uri(&raw)?;
+        Ok(Self { raw, parsed })
+    }
+
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.raw
     }
 
     /// Lowercase scheme, as parsed by `url` (the same parser browsers agree with).
-    pub fn scheme(&self) -> String {
-        self.parsed().scheme().to_owned()
+    pub fn scheme(&self) -> &str {
+        self.parsed.scheme()
     }
 
     /// Host for http/https URIs (IPv6 as `[::1]`); None otherwise.
-    pub fn host(&self) -> Option<String> {
-        let url = self.parsed();
-        if !matches!(url.scheme(), "http" | "https") {
+    pub fn host(&self) -> Option<&str> {
+        if !matches!(self.parsed.scheme(), "http" | "https") {
             return None;
         }
-        url.host_str().map(str::to_owned)
-    }
-
-    fn parsed(&self) -> url::Url {
-        // Validated in `validate_redirect_uri`.
-        url::Url::parse(&self.0).expect("validated absolute URI")
+        self.parsed.host_str()
     }
 
     /// Appends params to the existing query component, keeping existing params (§3.1.2, §4.1.2).
@@ -65,8 +88,8 @@ impl RedirectUri {
         let mut serializer = url::form_urlencoded::Serializer::new(String::new());
         serializer.extend_pairs(params);
         let encoded = serializer.finish();
-        let sep = if self.0.contains('?') {
-            if self.0.ends_with('?') || self.0.ends_with('&') {
+        let sep = if self.raw.contains('?') {
+            if self.raw.ends_with('?') || self.raw.ends_with('&') {
                 ""
             } else {
                 "&"
@@ -74,7 +97,7 @@ impl RedirectUri {
         } else {
             "?"
         };
-        format!("{}{sep}{encoded}", self.0)
+        format!("{}{sep}{encoded}", self.raw)
     }
 }
 
@@ -104,32 +127,20 @@ mod tests {
 
     #[test]
     fn host_of_http_uris() {
-        assert_eq!(
-            uri("https://a.example/cb").host(),
-            Some("a.example".to_owned())
-        );
-        assert_eq!(
-            uri("http://127.0.0.1:8080/cb").host(),
-            Some("127.0.0.1".to_owned())
-        );
-        assert_eq!(uri("http://[::1]:8080/cb").host(), Some("[::1]".to_owned()));
-        assert_eq!(uri("http://localhost").host(), Some("localhost".to_owned()));
+        assert_eq!(uri("https://a.example/cb").host(), Some("a.example"));
+        assert_eq!(uri("http://127.0.0.1:8080/cb").host(), Some("127.0.0.1"));
+        assert_eq!(uri("http://[::1]:8080/cb").host(), Some("[::1]"));
+        assert_eq!(uri("http://localhost").host(), Some("localhost"));
     }
 
     #[test]
     fn host_follows_the_url_parser() {
         assert_eq!(
             uri("http://evil.com\\@localhost/cb").host(),
-            Some("evil.com".to_owned())
+            Some("evil.com")
         );
-        assert_eq!(
-            uri("http://localhost@evil.com/cb").host(),
-            Some("evil.com".to_owned())
-        );
-        assert_eq!(
-            uri("HTTP://LocalHost/cb").host(),
-            Some("localhost".to_owned())
-        );
+        assert_eq!(uri("http://localhost@evil.com/cb").host(), Some("evil.com"));
+        assert_eq!(uri("HTTP://LocalHost/cb").host(), Some("localhost"));
         for bad in [
             " http://evil.com/cb",
             "\thttp://evil.com/cb",

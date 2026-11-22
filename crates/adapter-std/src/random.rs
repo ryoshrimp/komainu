@@ -45,6 +45,10 @@ mod tests {
     fn fill_bytes_fills_the_whole_buffer() {
         let mut buf = [0u8; 64];
         OsSecureRandom.fill_bytes(&mut buf);
-        assert!(buf.iter().any(|b| *b != 0));
+        // An unfilled tail would stay zero; a random 8-byte chunk is all zero with
+        // probability 2^-64.
+        for chunk in buf.chunks(8) {
+            assert!(chunk.iter().any(|b| *b != 0), "{chunk:?}");
+        }
     }
 }

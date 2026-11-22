@@ -5,7 +5,7 @@ use common::*;
 use komainu_application::{
     AuthorizeError, AuthorizeOutcome, AuthorizeParams, LoginError, NonRedirectableError,
 };
-use komainu_domain::{GrantType, Username};
+use komainu_domain::Username;
 
 fn setup(skip_consent: bool) -> (Fixture, Registered) {
     let fx = Fixture::new();
@@ -392,7 +392,6 @@ fn logout_deletes_the_session_and_login_form_names_the_client() {
     assert_eq!(fx.env.store.state().login_sessions.len(), 1);
     block_on(fx.authz.logout(&ctx(), &logged.session_token)).unwrap();
     assert!(fx.env.store.state().login_sessions.is_empty());
-    let _ = GrantType::AuthorizationCode;
 }
 
 #[test]

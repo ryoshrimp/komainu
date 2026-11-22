@@ -30,7 +30,12 @@ pub(crate) async fn decision(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let not_found = || bad_request(NonRedirectableError::RequestNotFound);
+    // Every early rejection is an error screen and is counted as such.
+    let reject = |error: NonRedirectableError| {
+        count_authorization_request("error_page");
+        bad_request(error)
+    };
+    let not_found = || reject(NonRedirectableError::RequestNotFound);
     let Some(form) = Form::parse(&headers, &body) else {
         return not_found();
     };
@@ -51,7 +56,7 @@ pub(crate) async fn decision(
     };
     let csrf = match verified_csrf(csrf_token, &headers) {
         Ok(csrf) => csrf,
-        Err(error) => return bad_request(error),
+        Err(error) => return reject(error),
     };
     let session = cookies::token(&headers, SESSION_COOKIE);
     let result = state

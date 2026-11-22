@@ -18,6 +18,8 @@ const SECURITY_HEADERS: [(&str, &str); 5] = [
     ("x-content-type-options", "nosniff"),
 ];
 
+const CSRF_MESSAGE: &str = "The form has expired. Please start again from the application.";
+
 fn assert_security_headers(reply: &Reply) {
     for (name, value) in SECURITY_HEADERS {
         assert_eq!(reply.header(name), Some(value), "header {name}");
@@ -171,7 +173,10 @@ async fn unknown_scope_redirects_with_invalid_scope() {
     let h = Harness::new();
     let client = setup(&h).await;
     let reply = h
-        .send(get(&authorize_uri(&client.id(), "&scope=unknown"), ""))
+        .send(get(
+            &authorize_uri_with_scope(&client.id(), "unknown", ""),
+            "",
+        ))
         .await;
     assert_eq!(reply.status, StatusCode::FOUND);
     let location = reply.location();
@@ -200,10 +205,88 @@ async fn login_with_wrong_csrf_or_no_cookie_is_rejected() {
         .await;
     assert_eq!(mismatch.status, StatusCode::BAD_REQUEST);
     assert!(mismatch.set_cookie("komainu_session").is_none());
+    assert!(mismatch.header("location").is_none());
+    assert!(mismatch.body.contains(CSRF_MESSAGE));
+    assert_security_headers(&mismatch);
 
     let no_cookie = h.send(post_form("/login", "", &body)).await;
     assert_eq!(no_cookie.status, StatusCode::BAD_REQUEST);
     assert!(no_cookie.set_cookie("komainu_session").is_none());
+    assert!(no_cookie.body.contains(CSRF_MESSAGE));
+    assert_security_headers(&no_cookie);
+}
+
+#[tokio::test]
+async fn decision_with_wrong_csrf_or_no_cookie_is_rejected() {
+    let h = Harness::new();
+    let client = setup(&h).await;
+    let (_, s) = start(&h, &client).await;
+    let login = h
+        .send(post_form(
+            "/login",
+            &format!("komainu_csrf={}", s.csrf),
+            &login_body(&s, PASSWORD),
+        ))
+        .await;
+    let session = login.cookie_value("komainu_session").unwrap();
+    let body = format!(
+        "request_id={}&csrf_token={}&decision=approve",
+        s.request_id, s.csrf
+    );
+
+    let wrong_cookie = format!(
+        "komainu_csrf=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; komainu_session={session}"
+    );
+    let mismatch = h
+        .send(post_form("/authorize/decision", &wrong_cookie, &body))
+        .await;
+    assert_eq!(mismatch.status, StatusCode::BAD_REQUEST);
+    assert!(mismatch.header("location").is_none());
+    assert!(mismatch.body.contains(CSRF_MESSAGE));
+    assert_security_headers(&mismatch);
+
+    let no_cookie = h
+        .send(post_form(
+            "/authorize/decision",
+            &format!("komainu_session={session}"),
+            &body,
+        ))
+        .await;
+    assert_eq!(no_cookie.status, StatusCode::BAD_REQUEST);
+    assert!(no_cookie.header("location").is_none());
+    assert!(no_cookie.body.contains(CSRF_MESSAGE));
+
+    // The rejected attempts did not consume the request: the right cookie still works.
+    let ok = h
+        .send(post_form(
+            "/authorize/decision",
+            &format!("komainu_csrf={}; komainu_session={session}", s.csrf),
+            &body,
+        ))
+        .await;
+    assert_eq!(ok.status, StatusCode::FOUND);
+}
+
+#[tokio::test]
+async fn decision_without_a_session_redirects_to_login() {
+    let h = Harness::new();
+    let client = setup(&h).await;
+    let (_, s) = start(&h, &client).await;
+    let reply = h
+        .send(post_form(
+            "/authorize/decision",
+            &format!("komainu_csrf={}", s.csrf),
+            &format!(
+                "request_id={}&csrf_token={}&decision=approve",
+                s.request_id, s.csrf
+            ),
+        ))
+        .await;
+    assert_eq!(reply.status, StatusCode::FOUND);
+    assert_eq!(
+        reply.location(),
+        format!("{BASE}/login?request_id={}", s.request_id)
+    );
 }
 
 #[tokio::test]
@@ -336,4 +419,38 @@ async fn logout_deletes_the_session_cookie() {
             .contains("Max-Age=0")
     );
     assert_security_headers(&reply);
+}
+
+#[tokio::test]
+async fn omitted_scope_uses_the_client_default_scopes() {
+    let h = Harness::new();
+    h.create_user("alice").await;
+    let mut input = confidential(&[GrantType::AuthorizationCode]);
+    input.default_scopes = komainu_domain::ScopeSet::parse("write").unwrap();
+    let client = h.register(input).await;
+
+    let uri = format!(
+        "/authorize?response_type=code&client_id={}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&state=xyz",
+        client.id()
+    );
+    let reply = h.send(get(&uri, "")).await;
+    assert_eq!(reply.status, StatusCode::FOUND);
+    let s = Started {
+        request_id: query_param(reply.location(), "request_id").unwrap(),
+        csrf: reply.cookie_value("komainu_csrf").unwrap(),
+    };
+    let csrf_cookie = format!("komainu_csrf={}", s.csrf);
+    let login = h
+        .send(post_form("/login", &csrf_cookie, &login_body(&s, PASSWORD)))
+        .await;
+    let session = login.cookie_value("komainu_session").unwrap();
+    let consent = h
+        .send(get(
+            &format!("/authorize/resume?request_id={}", s.request_id),
+            &format!("{csrf_cookie}; komainu_session={session}"),
+        ))
+        .await;
+    assert_eq!(consent.status, StatusCode::OK);
+    assert!(consent.body.contains("Write your data"));
+    assert!(!consent.body.contains("Read your data"));
 }

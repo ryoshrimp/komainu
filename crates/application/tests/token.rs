@@ -124,7 +124,7 @@ fn code_errors_are_invalid_grant_or_invalid_request() {
 
 #[test]
 fn unknown_client_with_basic_is_invalid_client_basic_attempted() {
-    let (fx, client, code) = setup();
+    let (fx, _client, code) = setup();
     let auth = komainu_application::ClientAuthentication::Basic {
         client_id: "no-such-client".to_owned(),
         secret: komainu_domain::Secret::new("x".to_owned()),
@@ -161,7 +161,6 @@ fn unknown_client_with_basic_is_invalid_client_basic_attempted() {
     assert_eq!(events[0].details["client_id_presented"], "no-such-client");
     assert_eq!(events[1].details["method"], "missing");
     assert_eq!(events[1].details["client_id_presented"], "null");
-    let _ = client;
 }
 
 #[test]
@@ -427,10 +426,17 @@ fn access_token_expires_exactly_at_ttl() {
     );
 }
 
-#[test]
-fn token_issued_audit_has_no_secret_values() {
-    let (fx, client, code) = setup();
-    let res = exchange(&fx, client.basic(), code_request(&code)).unwrap();
+/// Checks that the latest `token.issued` event is the only new one, carries the design's
+/// details, and holds neither the plaintext nor the hash of any issued token or credential.
+fn assert_token_issued(
+    fx: &Fixture,
+    expected_count: usize,
+    res: &komainu_application::TokenResponse,
+    grant_type: &str,
+    scope: &str,
+    refresh_issued: bool,
+    extra_secrets: &[&str],
+) {
     let issued: Vec<_> = fx
         .env
         .store
@@ -438,25 +444,80 @@ fn token_issued_audit_has_no_secret_values() {
         .into_iter()
         .filter(|e| e.kind == AuditKind::TokenIssued)
         .collect();
-    assert_eq!(issued.len(), 1);
-    let event = &issued[0];
-    assert_eq!(event.details["grant_type"], "authorization_code");
-    assert_eq!(event.details["scope"], "read write");
-    assert_eq!(event.details["refresh_token_issued"], "true");
+    assert_eq!(issued.len(), expected_count);
+    let event = issued.last().unwrap();
+    assert_eq!(event.details["grant_type"], grant_type);
+    assert_eq!(event.details["scope"], scope);
+    assert_eq!(
+        event.details["refresh_token_issued"],
+        if refresh_issued { "true" } else { "false" }
+    );
+    assert!(event.details.contains_key("grant_id"));
+    assert_eq!(res.refresh_token.is_some(), refresh_issued);
     let dump = format!("{event:?}");
-    let access = res.access_token.expose();
-    let refresh = res.refresh_token.as_ref().unwrap().expose();
-    for secret in [access, refresh, code.as_str(), client.secret.expose()] {
+    let mut secrets = vec![res.access_token.expose()];
+    secrets.extend(res.refresh_token.as_ref().map(|t| t.expose()));
+    secrets.extend_from_slice(extra_secrets);
+    for secret in secrets {
         assert!(!dump.contains(secret));
     }
-    let hex = res
-        .access_token
-        .hash()
-        .as_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-    assert!(!dump.contains(&hex));
+    let hex = |hash: komainu_domain::TokenHash| {
+        hash.as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    assert!(!dump.contains(&hex(res.access_token.hash())));
+    if let Some(refresh) = &res.refresh_token {
+        assert!(!dump.contains(&hex(refresh.hash())));
+    }
+}
+
+#[test]
+fn token_issued_audit_has_no_secret_values() {
+    let (fx, client, code) = setup();
+    let res = exchange(&fx, client.basic(), code_request(&code)).unwrap();
+    assert_token_issued(
+        &fx,
+        1,
+        &res,
+        "authorization_code",
+        "read write",
+        true,
+        &[code.as_str(), client.secret.expose()],
+    );
+}
+
+#[test]
+fn token_issued_audit_for_refresh_and_client_credentials() {
+    let (fx, client, code) = setup();
+    let first = exchange(&fx, client.basic(), code_request(&code)).unwrap();
+    let refresh = first.refresh_token.as_ref().unwrap().expose().to_owned();
+    let second = exchange(&fx, client.basic(), refresh_request(&refresh, None)).unwrap();
+    assert_token_issued(
+        &fx,
+        2,
+        &second,
+        "refresh_token",
+        "read write",
+        true,
+        &[refresh.as_str(), client.secret.expose()],
+    );
+    let third = exchange(
+        &fx,
+        client.basic(),
+        grant_request("client_credentials", Some("read")),
+    )
+    .unwrap();
+    assert_token_issued(
+        &fx,
+        3,
+        &third,
+        "client_credentials",
+        "read",
+        false,
+        &[client.secret.expose()],
+    );
 }
 
 #[test]

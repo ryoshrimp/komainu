@@ -19,13 +19,13 @@ use crate::wiring::Settings;
 
 /// A failure that ends the process: exit code and a one-line message.
 #[derive(Debug)]
-pub struct Exit {
+pub(crate) struct Exit {
     code: i32,
     message: String,
 }
 
 impl Exit {
-    pub fn new(code: i32, message: impl Display) -> Self {
+    pub(crate) fn new(code: i32, message: impl Display) -> Self {
         Self {
             code,
             message: message.to_string(),
@@ -33,12 +33,12 @@ impl Exit {
     }
 
     /// Exit code 1: a runtime error.
-    pub fn runtime(message: impl Display) -> Self {
+    pub(crate) fn runtime(message: impl Display) -> Self {
         Self::new(1, message)
     }
 
     /// Exit code 2: wrong usage, configuration or input.
-    pub fn usage(message: impl Display) -> Self {
+    pub(crate) fn usage(message: impl Display) -> Self {
         Self::new(2, message)
     }
 }
@@ -72,9 +72,13 @@ pub fn run() -> i32 {
 async fn execute(cli: Cli) -> Result<(), Exit> {
     let Cli { config, command } = cli;
     let mut config = config::load(config.as_deref()).map_err(Exit::usage)?;
-    // `validate` may log a warning, so `serve` sets up logging first.
+    // `validate` may log a warning, so `serve` sets up logging first. The filter is checked
+    // beforehand so that a bad `log.filter` is a configuration error (exit code 2).
     let metrics = match command {
-        Command::Serve { .. } => Some(telemetry::init(&config.log).map_err(Exit::runtime)?),
+        Command::Serve { .. } => {
+            config::validate_log_filter(&config.log).map_err(Exit::usage)?;
+            Some(telemetry::init(&config.log).map_err(Exit::runtime)?)
+        }
         _ => None,
     };
     config::validate(&mut config).map_err(Exit::usage)?;

@@ -80,19 +80,29 @@ fn non_redirectable(error: NonRedirectableError) -> AuthorizeError {
     AuthorizeError::NonRedirectable(error)
 }
 
-/// Builds an error redirect to the client. `state` is echoed only when valid.
+/// Builds the error redirect location. `state` is echoed only when valid.
+fn error_location(
+    redirect_uri: &RedirectUri,
+    code: AuthorizeErrorCode,
+    description: &str,
+    state: Option<&State>,
+) -> String {
+    let mut params = vec![("error", code.as_str()), ("error_description", description)];
+    if let Some(state) = state {
+        params.push(("state", state.as_inner()));
+    }
+    redirect_uri.with_query_params(&params)
+}
+
+/// Builds an error redirect to the client.
 fn redirect_error(
     redirect_uri: &RedirectUri,
     code: AuthorizeErrorCode,
     description: &str,
     state: Option<&State>,
 ) -> AuthorizeError {
-    let mut params = vec![("error", code.as_str()), ("error_description", description)];
-    if let Some(state) = state {
-        params.push(("state", state.as_inner()));
-    }
     AuthorizeError::Redirect {
-        location: redirect_uri.with_query_params(&params),
+        location: error_location(redirect_uri, code, description, state),
         error: code,
     }
 }
@@ -385,13 +395,12 @@ impl AuthorizationService {
             request.deny(subject, now).map_err(not_found)?;
             uow.authorization_requests().update(&request).await?;
             events.extend(request_events(deps, ctx, &mut request));
-            redirect_error(
+            error_location(
                 request.redirect_uri(),
                 AuthorizeErrorCode::AccessDenied,
                 "the resource owner denied the request",
                 request.state(),
             )
-            .location()
         };
         append_all(uow.as_mut(), events).await?;
         uow.commit().await?;
@@ -558,14 +567,5 @@ impl AuthorizationService {
                 scopes,
             },
         })
-    }
-}
-
-impl AuthorizeError {
-    fn location(self) -> String {
-        match self {
-            Self::Redirect { location, .. } => location,
-            _ => unreachable!("only used on redirect errors"),
-        }
     }
 }

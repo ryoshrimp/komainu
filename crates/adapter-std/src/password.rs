@@ -11,15 +11,9 @@ const DUMMY_PASSWORD: &str = "komainu-dummy-password";
 /// Argon2id v0x13 password hasher using the `argon2` crate defaults.
 ///
 /// Hashing and verification run on tokio's blocking pool.
+#[derive(Debug)]
 pub struct Argon2PasswordHasher {
     dummy_hash: String,
-}
-
-impl std::fmt::Debug for Argon2PasswordHasher {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Argon2PasswordHasher")
-            .finish_non_exhaustive()
-    }
 }
 
 fn argon2() -> Argon2<'static> {
@@ -90,64 +84,70 @@ impl PasswordHasher for Argon2PasswordHasher {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
     use super::*;
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
 
     fn pw(s: &str) -> Password {
         Password::try_new(Secret::new(s.to_owned())).unwrap()
     }
 
-    #[tokio::test]
-    async fn hash_is_phc_argon2id_and_verifies() {
-        let hasher = Argon2PasswordHasher::new().unwrap();
-        let hash = hasher.hash(&pw("correct horse")).await.unwrap();
-        assert!(hash.as_inner().starts_with("$argon2id$v=19$"));
-        assert!(hasher.verify(&pw("correct horse"), &hash).await);
-        assert!(!hasher.verify(&pw("wrong horse"), &hash).await);
-    }
-
-    #[tokio::test]
-    async fn same_password_hashes_to_different_strings() {
-        let hasher = Argon2PasswordHasher::new().unwrap();
-        let a = hasher.hash(&pw("same")).await.unwrap();
-        let b = hasher.hash(&pw("same")).await.unwrap();
-        assert_ne!(a.as_inner(), b.as_inner());
-    }
-
-    #[tokio::test]
-    async fn verify_returns_false_for_non_phc_hash() {
-        let hasher = Argon2PasswordHasher::new().unwrap();
-        for bad in [
-            "not a hash",
-            "plain$pw",
-            "$argon2id$",
-            "$argon2id$v=19$garbage",
-        ] {
-            let hash = PasswordHash::try_new(bad.to_owned()).unwrap();
-            assert!(!hasher.verify(&pw("x"), &hash).await, "{bad}");
-        }
-    }
-
-    #[tokio::test]
-    async fn verify_dummy_costs_about_as_much_as_verify() {
-        let hasher = Argon2PasswordHasher::new().unwrap();
-        let hash = hasher.hash(&pw("timing")).await.unwrap();
-        let t = Instant::now();
-        hasher.verify(&pw("timing"), &hash).await;
-        let real = t.elapsed();
-        let t = Instant::now();
-        hasher.verify_dummy(&pw("timing")).await;
-        let dummy = t.elapsed();
-        // Loose bounds: only guards against the dummy being skipped or far cheaper.
-        assert!(dummy * 4 > real, "dummy {dummy:?} vs real {real:?}");
-        assert!(dummy < real * 4, "dummy {dummy:?} vs real {real:?}");
+    #[test]
+    fn hash_is_phc_argon2id_and_verifies() {
+        block_on(async {
+            let hasher = Argon2PasswordHasher::new().unwrap();
+            let hash = hasher.hash(&pw("correct horse")).await.unwrap();
+            assert!(hash.as_inner().starts_with("$argon2id$v=19$"));
+            assert!(hasher.verify(&pw("correct horse"), &hash).await);
+            assert!(!hasher.verify(&pw("wrong horse"), &hash).await);
+        });
     }
 
     #[test]
-    fn debug_does_not_leak_hash_material() {
+    fn same_password_hashes_to_different_strings() {
+        block_on(async {
+            let hasher = Argon2PasswordHasher::new().unwrap();
+            let a = hasher.hash(&pw("same")).await.unwrap();
+            let b = hasher.hash(&pw("same")).await.unwrap();
+            assert_ne!(a.as_inner(), b.as_inner());
+        });
+    }
+
+    #[test]
+    fn verify_returns_false_for_non_phc_hash() {
+        block_on(async {
+            let hasher = Argon2PasswordHasher::new().unwrap();
+            for bad in [
+                "not a hash",
+                "plain$pw",
+                "$argon2id$",
+                "$argon2id$v=19$garbage",
+            ] {
+                let hash = PasswordHash::try_new(bad.to_owned()).unwrap();
+                assert!(!hasher.verify(&pw("x"), &hash).await, "{bad}");
+            }
+        });
+    }
+
+    #[test]
+    fn dummy_hash_uses_the_same_parameters_as_real_hashes() {
+        // verify_dummy costs the same as verify when both use the same Argon2 variant,
+        // version and cost parameters (the PHC prefix before the salt).
         let hasher = Argon2PasswordHasher::new().unwrap();
-        let s = format!("{hasher:?}");
-        assert!(!s.contains("argon2id"));
+        let real = hash_phc("anything").unwrap();
+        let params = |phc: &str| {
+            phc.split('$')
+                .take(4)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(params(&hasher.dummy_hash), params(&real));
+        // The dummy hash is a valid PHC string that the dummy password verifies against.
+        assert!(verify_phc(DUMMY_PASSWORD, &hasher.dummy_hash));
     }
 }

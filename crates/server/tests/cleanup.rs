@@ -38,15 +38,23 @@ async fn cleanup_run_once_deletes_only_tokens_past_the_grace_period() {
     .execute(&db.pool)
     .await
     .expect("grant");
-    // Expired 25 h, 24 h and 23 h ago; the grace period is 24 h.
-    for (n, hours) in [(1u8, 25), (2, 24), (3, 23)] {
+    // The purge cutoff is the host clock minus the 24 h grace period, so `expires_at` is computed
+    // on the host as well and never depends on the database clock. The service clock is not
+    // injectable here, so the tokens straddle the cutoff by one minute instead of sitting on it
+    // (the exact `<` / `<=` boundary is covered at the application and adapter level).
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("epoch")
+        .as_secs_f64();
+    for (n, offset_secs) in [(1u8, 24 * 3600 + 60), (2, 24 * 3600 - 60), (3, 23 * 3600)] {
         sqlx::query(
             "INSERT INTO access_tokens (id, grant_id, client_id, subject, scope, issued_at, expires_at) \
              VALUES ($1, '00000000-0000-7000-8000-000000000001', 'c', NULL, '{}', \
-             now() - interval '30 hours', now() - make_interval(hours => $2))",
+             to_timestamp($2) - interval '30 hours', to_timestamp($2) - make_interval(secs => $3))",
         )
         .bind(vec![n; 32])
-        .bind(hours)
+        .bind(now)
+        .bind(f64::from(offset_secs))
         .execute(&db.pool)
         .await
         .expect("access token");
@@ -55,10 +63,10 @@ async fn cleanup_run_once_deletes_only_tokens_past_the_grace_period() {
     let report = cleanup::run_once(&services.maintenance)
         .await
         .expect("purge");
-    assert_eq!(report.counts.access_tokens, 2);
-    let left: Vec<(Vec<u8>,)> = sqlx::query_as("SELECT id FROM access_tokens")
+    assert_eq!(report.counts.access_tokens, 1);
+    let left: Vec<(Vec<u8>,)> = sqlx::query_as("SELECT id FROM access_tokens ORDER BY id")
         .fetch_all(&db.pool)
         .await
         .expect("left");
-    assert_eq!(left, vec![(vec![3u8; 32],)]);
+    assert_eq!(left, vec![(vec![2u8; 32],), (vec![3u8; 32],)]);
 }

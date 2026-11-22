@@ -3,27 +3,11 @@
 use komainu_application::{AuthorizationRequestRepository, BoxFuture, StoreError};
 use komainu_domain::*;
 use sqlx::postgres::PgRow;
+use std::str::FromStr;
 
 use crate::codec::{col, hash_from_db, hash_to_db, scope_from_db, scope_to_db, valid};
 use crate::error::{corrupted, map_sqlx, not_found};
 use crate::uow::PgUnitOfWork;
-
-fn status_to_db(status: AuthorizationRequestStatus) -> &'static str {
-    match status {
-        AuthorizationRequestStatus::Pending => "pending",
-        AuthorizationRequestStatus::Approved => "approved",
-        AuthorizationRequestStatus::Denied => "denied",
-    }
-}
-
-fn status_from_db(value: &str) -> Result<AuthorizationRequestStatus, StoreError> {
-    match value {
-        "pending" => Ok(AuthorizationRequestStatus::Pending),
-        "approved" => Ok(AuthorizationRequestStatus::Approved),
-        "denied" => Ok(AuthorizationRequestStatus::Denied),
-        _ => Err(corrupted("authorization_requests.status")),
-    }
-}
 
 fn from_row(row: &PgRow) -> Result<AuthorizationRequest, StoreError> {
     let state = col::<Option<String>>(row, "state")?
@@ -50,7 +34,8 @@ fn from_row(row: &PgRow) -> Result<AuthorizationRequest, StoreError> {
                 col(row, "csrf_token_hash")?,
                 "authorization_requests.csrf_token_hash",
             )?,
-            status: status_from_db(&col::<String>(row, "status")?)?,
+            status: AuthorizationRequestStatus::from_str(&col::<String>(row, "status")?)
+                .map_err(|_| corrupted("authorization_requests.status"))?,
             subject,
             created_at: col(row, "created_at")?,
             updated_at: col(row, "updated_at")?,
@@ -94,7 +79,7 @@ impl AuthorizationRequestRepository for PgUnitOfWork {
             .bind(scope_to_db(&r.scope))
             .bind(r.state.as_ref().map(|s| s.as_inner()))
             .bind(hash_to_db(&r.csrf_token_hash))
-            .bind(status_to_db(r.status))
+            .bind(r.status.as_str())
             .bind(r.subject.as_ref().map(|s| s.as_inner()))
             .bind(r.created_at)
             .bind(r.updated_at)
@@ -122,7 +107,7 @@ impl AuthorizationRequestRepository for PgUnitOfWork {
             .bind(scope_to_db(&r.scope))
             .bind(r.state.as_ref().map(|s| s.as_inner()))
             .bind(hash_to_db(&r.csrf_token_hash))
-            .bind(status_to_db(r.status))
+            .bind(r.status.as_str())
             .bind(r.subject.as_ref().map(|s| s.as_inner()))
             .bind(r.created_at)
             .bind(r.updated_at)

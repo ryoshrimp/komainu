@@ -3,6 +3,7 @@
 use komainu_application::{BoxFuture, ListPage, StoreError, UserRepository};
 use komainu_domain::*;
 use sqlx::postgres::PgRow;
+use std::str::FromStr;
 
 use crate::codec::{col, valid};
 use crate::error::{corrupted, map_sqlx, not_found};
@@ -14,21 +15,6 @@ macro_rules! columns {
     };
 }
 
-fn status_to_db(status: UserStatus) -> &'static str {
-    match status {
-        UserStatus::Active => "active",
-        UserStatus::Disabled => "disabled",
-    }
-}
-
-fn status_from_db(value: &str) -> Result<UserStatus, StoreError> {
-    match value {
-        "active" => Ok(UserStatus::Active),
-        "disabled" => Ok(UserStatus::Disabled),
-        _ => Err(corrupted("users.status")),
-    }
-}
-
 fn from_row(row: &PgRow) -> Result<User, StoreError> {
     Ok(User::from_record(UserRecord {
         id: UserId::new(col(row, "id")?),
@@ -37,7 +23,8 @@ fn from_row(row: &PgRow) -> Result<User, StoreError> {
             PasswordHash::try_new(col(row, "password_hash")?),
             "users.password_hash",
         )?,
-        status: status_from_db(&col::<String>(row, "status")?)?,
+        status: UserStatus::from_str(&col::<String>(row, "status")?)
+            .map_err(|_| corrupted("users.status"))?,
         created_at: col(row, "created_at")?,
         updated_at: col(row, "updated_at")?,
     }))
@@ -105,7 +92,7 @@ impl UserRepository for PgUnitOfWork {
             .bind(r.id.as_inner())
             .bind(r.username.as_str())
             .bind(r.password_hash.as_inner())
-            .bind(status_to_db(r.status))
+            .bind(r.status.as_str())
             .bind(r.created_at)
             .bind(r.updated_at)
             .execute(&mut *self.tx)
@@ -125,7 +112,7 @@ impl UserRepository for PgUnitOfWork {
             .bind(r.id.as_inner())
             .bind(r.username.as_str())
             .bind(r.password_hash.as_inner())
-            .bind(status_to_db(r.status))
+            .bind(r.status.as_str())
             .bind(r.created_at)
             .bind(r.updated_at)
             .execute(&mut *self.tx)

@@ -1,7 +1,10 @@
+use std::str::FromStr;
+
 use ddd_toolkit::{AggregateRoot, Entity};
 use time::OffsetDateTime;
 
 use super::event::GrantEvent;
+use crate::error::DomainError;
 use crate::{AuthorizationCode, ClientId, GrantId, ScopeSet, Subject, TokenHash};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,12 +13,37 @@ pub enum GrantOrigin {
     ClientCredentials,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RevocationReason {
     CodeReplay,
     RefreshTokenReplay,
     ClientDisabled,
     UserDisabled,
+}
+
+impl RevocationReason {
+    /// The string stored in databases and exchanged in wire formats.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CodeReplay => "code_replay",
+            Self::RefreshTokenReplay => "refresh_token_replay",
+            Self::ClientDisabled => "client_disabled",
+            Self::UserDisabled => "user_disabled",
+        }
+    }
+}
+
+impl FromStr for RevocationReason {
+    type Err = DomainError;
+    fn from_str(s: &str) -> Result<Self, DomainError> {
+        match s {
+            "code_replay" => Ok(Self::CodeReplay),
+            "refresh_token_replay" => Ok(Self::RefreshTokenReplay),
+            "client_disabled" => Ok(Self::ClientDisabled),
+            "user_disabled" => Ok(Self::UserDisabled),
+            _ => Err(DomainError::invalid("revocation_reason", "unknown value")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

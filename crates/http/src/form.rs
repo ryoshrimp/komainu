@@ -50,14 +50,18 @@ pub(crate) fn verified_csrf(
     form_value: &str,
     headers: &HeaderMap,
 ) -> Result<OpaqueToken, NonRedirectableError> {
-    let mismatch = NonRedirectableError::CsrfMismatch;
-    let cookie = cookies::token(headers, CSRF_COOKIE).ok_or(mismatch)?;
+    let mismatch = || NonRedirectableError::CsrfMismatch;
+    let cookie = cookies::token(headers, CSRF_COOKIE).ok_or_else(mismatch)?;
     let presented =
-        OpaqueToken::try_new(Secret::new(form_value.to_owned())).map_err(|_| mismatch)?;
+        OpaqueToken::try_new(Secret::new(form_value.to_owned())).map_err(|_| mismatch())?;
     let equal: bool = cookie
         .expose()
         .as_bytes()
         .ct_eq(presented.expose().as_bytes())
         .into();
-    if equal { Ok(presented) } else { Err(mismatch) }
+    if equal {
+        Ok(presented)
+    } else {
+        Err(mismatch())
+    }
 }

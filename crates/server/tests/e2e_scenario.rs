@@ -73,6 +73,14 @@ impl Server {
         }
     }
 
+    /// Panics with the collected output when the process has already exited.
+    fn assert_running(&mut self) {
+        if let Some(status) = self.child.try_wait().expect("try_wait") {
+            let logs = String::from_utf8_lossy(&self.logs.lock().unwrap()).into_owned();
+            panic!("komainu serve exited early with {status}:\n{logs}");
+        }
+    }
+
     /// Sends SIGTERM, waits for exit code 0 and returns everything the server logged.
     fn stop(mut self) -> String {
         let killed = Command::new("kill")
@@ -94,7 +102,28 @@ impl Drop for Server {
     fn drop(&mut self) {
         // Only reached when the test failed before `stop`.
         let _ = self.child.kill();
+        let _ = self.child.wait();
     }
+}
+
+/// Standard base64 with padding, as used in the `Authorization: Basic` header.
+fn base64_encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in input.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 fn field(out: &str, name: &str) -> String {
@@ -311,7 +340,7 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
     let output = common::run(&config_path, &["user", "create", "alice"], Some(PASSWORD));
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 
-    let server = Server::start(&config_path);
+    let mut server = Server::start(&config_path);
     let h = Harness {
         http: Client::builder()
             .cookie_store(true)
@@ -328,6 +357,7 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
         {
             break;
         }
+        server.assert_running();
         assert!(Instant::now() < deadline, "server did not start");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -356,6 +386,14 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
         ("quiet client secret", quiet_secret.clone()),
         ("service client secret", svc_secret.clone()),
     ];
+    // The `Authorization: Basic` payload of every client must not reach the log either.
+    for (label, id, secret) in [
+        ("web basic credentials", &web_id, &web_secret),
+        ("quiet basic credentials", &quiet_id, &quiet_secret),
+        ("service basic credentials", &svc_id, &svc_secret),
+    ] {
+        secrets.push((label, base64_encode(format!("{id}:{secret}").as_bytes())));
+    }
 
     // F-2: errors that must not redirect, and an error that redirects with the state.
     let response = h.authorize("no-such-client", "read").await;
@@ -467,6 +505,8 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
     secrets.push(("refresh token 1", refresh1.clone()));
     let info = verify(access1.clone()).await.expect("valid access token");
     assert_eq!(info.scope.to_string(), "read write");
+    // F-10: an unknown token is `None`.
+    assert!(verify("e2e-unknown-access-token".into()).await.is_none());
 
     // F-4: the second use of the code fails and revokes what the first one issued.
     let (status, _, body) = h
@@ -618,8 +658,27 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
             "{kind}: {audit:?}"
         );
     }
-    assert_eq!(audit["client.registered"], 3);
-    assert_eq!(audit["login.failed"], 1);
+    // Counts follow from the scenario above.
+    for (kind, count) in [
+        ("client.registered", 3),
+        ("client.disabled", 1),
+        ("user.created", 1),
+        ("login.failed", 1),
+        ("login.succeeded", 1),
+        ("logout", 1),
+        ("consent.granted", 1),
+        // code 1, code 2 (remembered consent) and the skip_consent client's code.
+        ("authorization_code.issued", 3),
+        ("authorization_code.replay_detected", 1),
+        ("refresh_token.replay_detected", 1),
+        // Both replays revoke their grant, and disabling the service client revokes its grant.
+        ("grant.revoked", 3),
+        ("client_authentication.failed", 1),
+        // Two code exchanges, one refresh and the client credentials call.
+        ("token.issued", 4),
+    ] {
+        assert_eq!(audit.get(kind).copied(), Some(count), "{kind}: {audit:?}");
+    }
     let (request_id,): (String,) = sqlx::query_as(
         "SELECT request_id FROM audit_events WHERE kind = 'token.issued' AND client_id = $1",
     )
@@ -639,6 +698,10 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
     assert!(logs.contains("komainu started"), "no startup line");
     assert!(logs.contains("\"path\":\"/token\""), "no request log lines");
     assert!(logs.contains("http_request"), "no request span");
+    assert!(
+        logs.contains("\"level\":\"DEBUG\""),
+        "the debug filter produced no DEBUG line"
+    );
     for (label, value) in &secrets {
         assert!(value.len() >= 8, "{label} is too short to be meaningful");
         assert_eq!(

@@ -176,6 +176,13 @@ pub fn load(path: Option<&Path>) -> Result<Config, ConfigError> {
         .map_err(|e| invalid(format!("invalid configuration: {e}")))
 }
 
+/// Checks that `log.filter` is valid `tracing` `EnvFilter` syntax.
+pub fn validate_log_filter(log: &LogConfig) -> Result<(), ConfigError> {
+    tracing_subscriber::EnvFilter::try_new(&log.filter)
+        .map(drop)
+        .map_err(|e| invalid(format!("log.filter is not a valid filter: {e}")))
+}
+
 /// Checks the rules in server.md and normalizes `server.public_base_url` (no trailing `/`).
 /// Returns the first error found.
 pub fn validate(config: &mut Config) -> Result<(), ConfigError> {
@@ -268,6 +275,8 @@ pub fn validate(config: &mut Config) -> Result<(), ConfigError> {
     if config.server.listen == config.ops.listen {
         return Err(invalid("server.listen and ops.listen must differ"));
     }
+
+    validate_log_filter(&config.log)?;
 
     if config.server.public_base_url.starts_with("https://") && !config.session.cookie_secure {
         tracing::warn!("session.cookie_secure is false although public_base_url uses https");

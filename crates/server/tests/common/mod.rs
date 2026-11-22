@@ -39,7 +39,57 @@ pub async fn start_db() -> TestDb {
     }
 }
 
-/// A free local address (it may be taken again before use, which is unlikely in tests).
+/// A `komainu serve` child process that is killed and reaped on drop, so that a failing
+/// assertion never leaves it running. Its output goes to a file that is shown when the
+/// process exits before it is ready.
+pub struct ServeProcess {
+    child: std::process::Child,
+    log: PathBuf,
+}
+
+impl ServeProcess {
+    pub fn spawn(config: &std::path::Path) -> Self {
+        let log = config.with_file_name("serve.log");
+        let file = std::fs::File::create(&log).expect("create log file");
+        let child = std::process::Command::new(env!("CARGO_BIN_EXE_komainu"))
+            .env_clear()
+            .arg("--config")
+            .arg(config)
+            .arg("serve")
+            .stdout(file.try_clone().expect("clone log file"))
+            .stderr(file)
+            .spawn()
+            .expect("spawn komainu");
+        Self { child, log }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Panics with the process output when it has already exited.
+    pub fn assert_running(&mut self) {
+        if let Some(status) = self.child.try_wait().expect("try_wait") {
+            let output = std::fs::read_to_string(&self.log).unwrap_or_default();
+            panic!("komainu serve exited early with {status}:\n{output}");
+        }
+    }
+
+    /// Waits for the process to exit.
+    pub fn wait(&mut self) -> std::process::ExitStatus {
+        self.child.wait().expect("wait")
+    }
+}
+
+impl Drop for ServeProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A free local address. It is released before it is used, so another process could take it
+/// in between; the tests detect an early exit of the server (`assert_running`) and say why.
 pub fn free_addr() -> SocketAddr {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind")

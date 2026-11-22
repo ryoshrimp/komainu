@@ -56,7 +56,13 @@ impl ResourceOwnerAuthenticator for BuiltinAuthenticator {
         subject: &'a Subject,
     ) -> BoxFuture<'a, Result<bool, StoreError>> {
         Box::pin(async move {
-            let Ok(id) = uuid::Uuid::parse_str(subject.as_inner()) else {
+            // `Uuid::try_parse` also accepts simple, braced and urn forms; only the
+            // lowercase hyphenated form `Subject::from(UserId)` produces is valid.
+            let raw = subject.as_inner();
+            let Some(id) = uuid::Uuid::try_parse(raw)
+                .ok()
+                .filter(|id| id.hyphenated().to_string() == *raw)
+            else {
                 return Ok(false);
             };
             let user = uow.users().find(UserId::new(id)).await?;

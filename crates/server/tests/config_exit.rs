@@ -54,3 +54,18 @@ fn config_duplicate_scope_names_exit_2() {
     let path = write("dup", &body);
     assert_eq!(exit_code(&path).0, Some(2));
 }
+
+#[test]
+fn config_invalid_log_filter_exits_2_for_every_command() {
+    let path = write(
+        "filter",
+        &format!("{BASE}\n[log]\nformat = \"json\"\nfilter = \"info,[\"\n"),
+    );
+    for command in ["migrate", "serve"] {
+        common::command(&path)
+            .arg(command)
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains("log.filter"));
+    }
+}

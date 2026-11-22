@@ -1,13 +1,37 @@
+use std::str::FromStr;
+
 use ddd_toolkit::{AggregateRoot, Entity};
 use time::OffsetDateTime;
 
 use super::event::UserEvent;
+use crate::error::DomainError;
 use crate::{PasswordHash, Subject, UserId, Username};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum UserStatus {
     Active,
     Disabled,
+}
+
+impl UserStatus {
+    /// The string stored in databases and exchanged in wire formats.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl FromStr for UserStatus {
+    type Err = DomainError;
+    fn from_str(s: &str) -> Result<Self, DomainError> {
+        match s {
+            "active" => Ok(Self::Active),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err(DomainError::invalid("user_status", "unknown value")),
+        }
+    }
 }
 
 /// A built-in resource owner.

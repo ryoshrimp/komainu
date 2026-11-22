@@ -485,7 +485,48 @@ async fn purge_expired_deletes_only_expired_rows() {
             expires_at: t(expires),
         })
     };
+    let code = |n: u8, expires: i64| {
+        AuthorizationCode::from_record(AuthorizationCodeRecord {
+            id: hash(n),
+            client_id: cid("c1"),
+            subject: subject("alice"),
+            redirect_uri: uri("https://a.example/cb"),
+            redirect_uri_provided: true,
+            scope: scope("read"),
+            status: AuthorizationCodeStatus::Issued,
+            issued_at: t(0),
+            expires_at: t(expires),
+        })
+    };
+    let refresh = |n: u8, expires: i64| {
+        RefreshToken::from_record(RefreshTokenRecord {
+            id: hash(n),
+            grant_id: gid(1),
+            client_id: cid("c1"),
+            status: RefreshTokenStatus::Active,
+            issued_at: t(0),
+            expires_at: t(expires),
+        })
+    };
+    let request = |n: u128, expires: i64| {
+        AuthorizationRequest::from_record(AuthorizationRequestRecord {
+            id: AuthorizationRequestId::new(uuid::Uuid::from_u128(n)),
+            client_id: cid("c1"),
+            redirect_uri: uri("https://a.example/cb"),
+            redirect_uri_provided: true,
+            scope: scope("read"),
+            state: None,
+            csrf_token_hash: hash(9),
+            status: AuthorizationRequestStatus::Pending,
+            subject: None,
+            created_at: t(0),
+            updated_at: t(0),
+            expires_at: t(expires),
+        })
+    };
     let mut uow = db.factory.begin().await.unwrap();
+    // Each table gets one row expiring exactly at the cutoff (deleted) and one just after
+    // (kept).
     uow.login_sessions()
         .insert(&session(1, 1000))
         .await
@@ -503,23 +544,93 @@ async fn purge_expired_deletes_only_expired_rows() {
         .await
         .unwrap();
     uow.access_tokens()
-        .insert(&access(4, 1, 5000))
+        .insert(&access(4, 1, 1001))
+        .await
+        .unwrap();
+    uow.refresh_tokens()
+        .insert(&refresh(5, 1000))
+        .await
+        .unwrap();
+    uow.refresh_tokens()
+        .insert(&refresh(6, 1001))
+        .await
+        .unwrap();
+    uow.authorization_codes()
+        .insert(&code(7, 1000))
+        .await
+        .unwrap();
+    uow.authorization_codes()
+        .insert(&code(8, 1001))
+        .await
+        .unwrap();
+    uow.authorization_requests()
+        .insert(&request(1, 1000))
+        .await
+        .unwrap();
+    uow.authorization_requests()
+        .insert(&request(2, 1001))
         .await
         .unwrap();
     let counts = uow.purge().purge_expired(cutoff).await.unwrap();
     assert_eq!(
         counts,
         PurgeCounts {
-            login_sessions: 1,
+            authorization_requests: 1,
+            authorization_codes: 1,
             access_tokens: 1,
+            refresh_tokens: 1,
+            login_sessions: 1,
             grants: 1,
-            ..PurgeCounts::default()
         }
     );
     assert!(uow.grants().find(gid(1)).await.unwrap().is_some());
     assert!(uow.grants().find(gid(2)).await.unwrap().is_none());
     assert!(uow.grants().find(gid(3)).await.unwrap().is_some());
+    assert!(uow.access_tokens().find(&hash(3)).await.unwrap().is_none());
     assert!(uow.access_tokens().find(&hash(4)).await.unwrap().is_some());
+    assert!(
+        uow.refresh_tokens()
+            .find_for_update(&hash(5))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        uow.refresh_tokens()
+            .find_for_update(&hash(6))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        uow.authorization_codes()
+            .find_for_update(&hash(7))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        uow.authorization_codes()
+            .find_for_update(&hash(8))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let req_id = |n: u128| AuthorizationRequestId::new(uuid::Uuid::from_u128(n));
+    assert!(
+        uow.authorization_requests()
+            .find_for_update(req_id(1))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        uow.authorization_requests()
+            .find_for_update(req_id(2))
+            .await
+            .unwrap()
+            .is_some()
+    );
     assert!(uow.login_sessions().find(&hash(2)).await.unwrap().is_some());
     assert!(uow.login_sessions().find(&hash(1)).await.unwrap().is_none());
 }
@@ -861,6 +972,7 @@ async fn tokens_are_stored_hashed_only() {
         ("authorization_codes", "id", &code_hash),
         ("clients", "secret_hash", &client_secret.hash()),
         ("login_sessions", "id", &session.hash()),
+        ("authorization_requests", "csrf_token_hash", &csrf.hash()),
     ] {
         assert_eq!(
             count_hash(&db, table, column, token).await,
@@ -883,6 +995,7 @@ async fn tokens_are_stored_hashed_only() {
         refresh.expose().to_owned(),
         session.expose().to_owned(),
         client_secret.expose().to_owned(),
+        csrf.expose().to_owned(),
         code,
         "correct horse".to_owned(),
     ];
@@ -918,7 +1031,8 @@ async fn tokens_are_stored_hashed_only() {
     assert!(phc.starts_with("$argon2id$"));
 }
 
-/// Ten concurrent refreshes with one refresh token: exactly one rotation succeeds.
+/// Ten concurrent refreshes with one refresh token: exactly one rotation succeeds, the rest get
+/// `invalid_grant` and the replay revokes the grant.
 #[tokio::test]
 async fn concurrent_refresh_rotates_once() {
     let db = start().await;
@@ -952,14 +1066,31 @@ async fn concurrent_refresh_rotates_once() {
                 },
             )
             .await
-            .is_ok()
         }));
     }
-    let mut ok = 0;
+    let (mut ok, mut invalid) = (0, 0);
     for task in tasks {
-        if task.await.unwrap() {
-            ok += 1;
+        match task.await.unwrap() {
+            Ok(_) => ok += 1,
+            Err(TokenError::InvalidGrant) => invalid += 1,
+            Err(other) => panic!("unexpected {other:?}"),
         }
     }
-    assert_eq!(ok, 1);
+    assert_eq!((ok, invalid), (1, 9));
+    // The replayed token revokes the grant; the original is rotated and one successor exists.
+    let row = sqlx::query("SELECT status, revocation_reason FROM grants")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(row.get::<String, _>("status"), "revoked");
+    assert_eq!(
+        row.get::<String, _>("revocation_reason"),
+        "refresh_token_replay"
+    );
+    let rows = sqlx::query("SELECT status FROM refresh_tokens ORDER BY status")
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+    let statuses: Vec<String> = rows.iter().map(|r| r.get("status")).collect();
+    assert_eq!(statuses, ["active", "rotated"]);
 }

@@ -203,7 +203,11 @@ pub fn query_param(location: &str, name: &str) -> Option<String> {
 }
 
 pub fn authorize_uri(client_id: &str, extra: &str) -> String {
+    authorize_uri_with_scope(client_id, "read", extra)
+}
+
+pub fn authorize_uri_with_scope(client_id: &str, scope: &str, extra: &str) -> String {
     format!(
-        "/authorize?response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&state=xyz{extra}"
+        "/authorize?response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&scope={scope}&state=xyz{extra}"
     )
 }

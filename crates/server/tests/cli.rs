@@ -83,6 +83,11 @@ async fn cli_client_create_prints_credentials_that_work_and_audits() {
     let out = common::stdout(&output);
     let id = field(&out, "client_id").to_owned();
     let secret = field(&out, "client_secret").to_owned();
+    // Exactly the two lines `client_id:` and `client_secret:`.
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.len(), 2, "{out}");
+    assert!(lines[0].starts_with("client_id: "), "{out}");
+    assert!(lines[1].starts_with("client_secret: "), "{out}");
     let token = env
         .services()
         .app_state
@@ -112,6 +117,7 @@ async fn cli_client_show_hides_secret_and_unknown_id_exits_3() {
     let env = env().await;
     let out = common::stdout(&env.run(&create_args("read")));
     let id = field(&out, "client_id").to_owned();
+    let secret = field(&out, "client_secret").to_owned();
     let shown = env.run(&["client", "show", &id]);
     assert_eq!(shown.status.code(), Some(0));
     // `auth_method` legitimately prints `client_secret_basic`; the secret itself has its own key.
@@ -119,6 +125,7 @@ async fn cli_client_show_hides_secret_and_unknown_id_exits_3() {
     assert!(!text.contains("client_secret:"), "{text}");
     let json = common::stdout(&env.run(&["client", "show", &id, "--output", "json"]));
     assert!(!json.contains("\"client_secret\""), "{json}");
+    assert!(!text.contains(&secret) && !json.contains(&secret));
     let missing = env.run(&["client", "show", "00000000-0000-0000-0000-000000000000"]);
     assert_eq!(missing.status.code(), Some(3));
 }
@@ -232,6 +239,11 @@ async fn cli_each_admin_command_adds_one_audit_row() {
     for (args, kind) in cases {
         assert_eq!(user(args).status.code(), Some(0), "{args:?}");
         let expected = if kind == "user.created" { 2 } else { 1 };
-        assert_eq!(env.audit(kind).await.0, expected, "{kind}");
+        let (count, actor) = env.audit(kind).await;
+        assert_eq!(
+            (count, actor.as_deref()),
+            (expected, Some("admin")),
+            "{kind}"
+        );
     }
 }

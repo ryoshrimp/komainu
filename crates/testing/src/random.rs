@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use komainu_application::SecureRandom;
 
 /// Deterministic: fills bytes from an incrementing u64 counter (little endian, repeated).
-/// Every call yields a different byte sequence.
+/// Each call uses the next counter value, so buffers of 8 or more bytes differ between calls
+/// (a shorter buffer only sees a prefix of the counter, which can repeat).
 #[derive(Clone, Default)]
 pub struct SequenceRandom {
     counter: Arc<AtomicU64>,

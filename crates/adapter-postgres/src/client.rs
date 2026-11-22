@@ -17,21 +17,6 @@ macro_rules! columns {
     };
 }
 
-fn status_to_db(status: ClientStatus) -> &'static str {
-    match status {
-        ClientStatus::Active => "active",
-        ClientStatus::Disabled => "disabled",
-    }
-}
-
-fn status_from_db(value: &str) -> Result<ClientStatus, StoreError> {
-    match value {
-        "active" => Ok(ClientStatus::Active),
-        "disabled" => Ok(ClientStatus::Disabled),
-        _ => Err(corrupted("clients.status")),
-    }
-}
-
 fn from_row(row: &PgRow) -> Result<Client, StoreError> {
     let secret_hash = col::<Option<Vec<u8>>>(row, "secret_hash")?
         .map(|b| hash_from_db(b, "clients.secret_hash"))
@@ -57,7 +42,8 @@ fn from_row(row: &PgRow) -> Result<Client, StoreError> {
         allowed_scopes: scope_from_db(col(row, "allowed_scopes")?, "clients.allowed_scopes")?,
         default_scopes: scope_from_db(col(row, "default_scopes")?, "clients.default_scopes")?,
         skip_consent: col(row, "skip_consent")?,
-        status: status_from_db(&col::<String>(row, "status")?)?,
+        status: ClientStatus::from_str(&col::<String>(row, "status")?)
+            .map_err(|_| corrupted("clients.status"))?,
         created_at: col(row, "created_at")?,
         updated_at: col(row, "updated_at")?,
     }))
@@ -120,7 +106,7 @@ impl ClientRepository for PgUnitOfWork {
             .bind(scope_to_db(&r.allowed_scopes))
             .bind(scope_to_db(&r.default_scopes))
             .bind(r.skip_consent)
-            .bind(status_to_db(r.status))
+            .bind(r.status.as_str())
             .bind(r.created_at)
             .bind(r.updated_at)
             .execute(&mut *self.tx)
@@ -149,7 +135,7 @@ impl ClientRepository for PgUnitOfWork {
             .bind(scope_to_db(&r.allowed_scopes))
             .bind(scope_to_db(&r.default_scopes))
             .bind(r.skip_consent)
-            .bind(status_to_db(r.status))
+            .bind(r.status.as_str())
             .bind(r.created_at)
             .bind(r.updated_at)
             .execute(&mut *self.tx)

@@ -106,7 +106,10 @@ mod tests {
                 .authenticate(uow.as_mut(), &credentials("Alice", "pw"))
                 .await
                 .unwrap();
-            assert_eq!(ok, AuthenticationOutcome::Authenticated(user.subject()));
+            assert!(matches!(
+                &ok,
+                AuthenticationOutcome::Authenticated(subject) if *subject == user.subject()
+            ));
             for (name, pw) in [
                 ("alice", "bad"),
                 ("nobody", "pw"),
@@ -118,9 +121,8 @@ mod tests {
                     .authenticate(uow.as_mut(), &credentials(name, pw))
                     .await
                     .unwrap();
-                assert_eq!(
-                    out,
-                    AuthenticationOutcome::InvalidCredentials,
+                assert!(
+                    matches!(out, AuthenticationOutcome::InvalidCredentials),
                     "{name}/{pw}"
                 );
             }
@@ -138,13 +140,80 @@ mod tests {
                 .authenticate(uow.as_mut(), &credentials("alice", "pw"))
                 .await
                 .unwrap();
-            assert_eq!(out, AuthenticationOutcome::Disabled);
+            assert!(matches!(out, AuthenticationOutcome::Disabled));
             let out = auth
                 .authenticate(uow.as_mut(), &credentials("alice", "bad"))
                 .await
                 .unwrap();
-            assert_eq!(out, AuthenticationOutcome::InvalidCredentials);
+            assert!(matches!(out, AuthenticationOutcome::InvalidCredentials));
             assert!(!auth.is_active(uow.as_mut(), &user.subject()).await.unwrap());
+        });
+    }
+
+    /// Counts `verify_dummy` calls and delegates everything else to the plain hasher.
+    struct CountingHasher {
+        dummy_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl komainu_application::PasswordHasher for CountingHasher {
+        fn hash<'a>(
+            &'a self,
+            password: &'a komainu_domain::Password,
+        ) -> komainu_application::BoxFuture<
+            'a,
+            Result<PasswordHash, komainu_application::PasswordHashError>,
+        > {
+            crate::PlainPasswordHasher.hash(password)
+        }
+
+        fn verify<'a>(
+            &'a self,
+            password: &'a komainu_domain::Password,
+            hash: &'a PasswordHash,
+        ) -> komainu_application::BoxFuture<'a, bool> {
+            crate::PlainPasswordHasher.verify(password, hash)
+        }
+
+        fn verify_dummy<'a>(
+            &'a self,
+            _password: &'a komainu_domain::Password,
+        ) -> komainu_application::BoxFuture<'a, ()> {
+            self.dummy_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    #[test]
+    fn unknown_user_runs_verify_dummy_only_when_the_password_is_valid() {
+        use komainu_application::{BuiltinAuthenticator, ResourceOwnerAuthenticator};
+        use std::sync::atomic::Ordering;
+
+        let (env, _user) = env_with_user();
+        let hasher = std::sync::Arc::new(CountingHasher {
+            dummy_calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let auth = BuiltinAuthenticator::new(hasher.clone());
+        block_on(async {
+            let mut uow = env.deps.store.begin().await.unwrap();
+            // Known user, wrong password: verify runs, not the dummy.
+            auth.authenticate(uow.as_mut(), &credentials("alice", "bad"))
+                .await
+                .unwrap();
+            assert_eq!(hasher.dummy_calls.load(Ordering::Relaxed), 0);
+            // Unknown user and a malformed username both take the dummy path.
+            auth.authenticate(uow.as_mut(), &credentials("nobody", "pw"))
+                .await
+                .unwrap();
+            auth.authenticate(uow.as_mut(), &credentials("a", "pw"))
+                .await
+                .unwrap();
+            assert_eq!(hasher.dummy_calls.load(Ordering::Relaxed), 2);
+            // An invalid password is rejected before any hashing (design: length rule).
+            auth.authenticate(uow.as_mut(), &credentials("nobody", ""))
+                .await
+                .unwrap();
+            assert_eq!(hasher.dummy_calls.load(Ordering::Relaxed), 2);
         });
     }
 }

@@ -38,7 +38,7 @@ async fn client_credentials_with_basic_succeeds() {
     let reply = h
         .send(token_request(
             Some(&basic(&c.id(), &c.secret())),
-            "grant_type=client_credentials",
+            "grant_type=client_credentials&scope=read",
         ))
         .await;
     assert_eq!(reply.status, StatusCode::OK);
@@ -199,11 +199,38 @@ async fn request_id_header_is_echoed_and_used_in_audit() {
         ))
         .await;
     let generated = without.header("x-request-id").expect("generated id");
-    assert!(uuid_like(generated), "not a UUID: {generated}");
+    assert!(is_uuid_v7(generated), "not a UUIDv7: {generated}");
 }
 
-fn uuid_like(value: &str) -> bool {
-    value.len() == 36 && value.matches('-').count() == 4
+#[tokio::test]
+async fn invalid_request_id_header_is_replaced_with_a_uuid_v7() {
+    let h = Harness::new();
+    let c = cc_client(&h).await;
+    let too_long = "a".repeat(129);
+    for invalid in ["has space", "", too_long.as_str(), "caf\u{e9}"] {
+        let mut request = token_request(
+            Some(&basic(&c.id(), &c.secret())),
+            "grant_type=client_credentials",
+        );
+        request
+            .headers_mut()
+            .insert("x-request-id", invalid.parse().unwrap());
+        let reply = h.send(request).await;
+        let id = reply.header("x-request-id").expect("request id");
+        assert!(is_uuid_v7(id), "{invalid:?} was not replaced: {id}");
+    }
+    // The boundary: 128 visible characters are kept.
+    let longest = "a".repeat(128);
+    let mut request = token_request(None, "grant_type=client_credentials");
+    request
+        .headers_mut()
+        .insert("x-request-id", longest.parse().unwrap());
+    let reply = h.send(request).await;
+    assert_eq!(reply.header("x-request-id"), Some(longest.as_str()));
+}
+
+fn is_uuid_v7(value: &str) -> bool {
+    uuid::Uuid::parse_str(value).is_ok_and(|id| id.get_version_num() == 7)
 }
 
 #[tokio::test]

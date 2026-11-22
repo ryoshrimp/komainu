@@ -48,7 +48,7 @@ pub enum AdminCommand {
 }
 
 /// Runs an administration command against `admin`.
-pub async fn run_admin(admin: &AdminService, command: AdminCommand) -> Result<(), Exit> {
+pub(crate) async fn run_admin(admin: &AdminService, command: AdminCommand) -> Result<(), Exit> {
     match command {
         AdminCommand::Client(command) => client::run(admin, command).await,
         AdminCommand::User(command) => user::run(admin, command).await,

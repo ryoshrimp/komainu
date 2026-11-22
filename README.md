@@ -47,6 +47,7 @@ export PATH="$PWD/target/release:$PATH"
 
 cat > komainu.toml <<'TOML'
 [server]
+listen = "127.0.0.1:8080"
 public_base_url = "http://localhost:8080"
 allow_insecure_http = true   # local development only
 
@@ -67,7 +68,7 @@ komainu serve
 ```
 
 `client create` prints `client_id` and `client_secret`. The secret is shown only once. In another
-terminal:
+terminal, put the two values in `CLIENT_ID` and `CLIENT_SECRET`:
 
 ```sh
 curl -u "$CLIENT_ID:$CLIENT_SECRET" -d grant_type=client_credentials -d scope=read \
@@ -134,9 +135,9 @@ makes every access token it received invalid.
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features pg-tests -- -D warnings
 cargo test --workspace
-cargo test --workspace --features komainu-server/pg-tests   # needs Docker (PostgreSQL via testcontainers)
+cargo test --workspace --features pg-tests   # needs Docker (PostgreSQL via testcontainers)
 ```
 
 ## License

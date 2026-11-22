@@ -123,9 +123,7 @@ impl RefreshToken {
             expires_at: self.expires_at,
         }
     }
-}
 
-impl RefreshToken {
     /// Restores a token from storage. Queues no events and does not validate.
     pub fn from_record(record: RefreshTokenRecord) -> Self {
         RefreshToken {

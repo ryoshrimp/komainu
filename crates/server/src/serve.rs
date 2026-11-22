@@ -13,14 +13,14 @@ use crate::wiring::{Settings, services};
 use crate::{Exit, cleanup, ops};
 
 /// `komainu migrate`: applies the embedded migrations.
-pub async fn run_migrate(settings: Settings) -> Result<(), Exit> {
+pub(crate) async fn run_migrate(settings: Settings) -> Result<(), Exit> {
     let pool = connect(&settings.pg).await.map_err(Exit::runtime)?;
     migrate(&pool).await.map_err(Exit::runtime)?;
     Ok(())
 }
 
 /// `komainu serve`. Returns when the servers have stopped; the error carries the exit code.
-pub async fn run_serve(
+pub(crate) async fn run_serve(
     settings: Settings,
     migrate_first: bool,
     metrics: PrometheusHandle,

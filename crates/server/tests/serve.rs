@@ -3,7 +3,7 @@
 
 mod common;
 
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -34,15 +34,7 @@ async fn serve_health_metrics_and_sigterm() {
             .to_owned()
     };
 
-    let mut child: Child = Command::new(env!("CARGO_BIN_EXE_komainu"))
-        .env_clear()
-        .arg("--config")
-        .arg(&config)
-        .arg("serve")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn");
+    let mut child = common::ServeProcess::spawn(&config);
 
     let http = reqwest::Client::new();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -52,6 +44,7 @@ async fn serve_health_metrics_and_sigterm() {
         {
             break;
         }
+        child.assert_running();
         assert!(Instant::now() < deadline, "server did not start");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -93,8 +86,7 @@ async fn serve_health_metrics_and_sigterm() {
     assert!(killed.success());
     let status = tokio::task::spawn_blocking(move || child.wait())
         .await
-        .unwrap()
-        .expect("wait");
+        .unwrap();
     assert_eq!(status.code(), Some(0));
     assert!(started.elapsed() < Duration::from_secs(30));
 }

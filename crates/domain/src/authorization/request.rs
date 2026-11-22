@@ -1,16 +1,45 @@
+use std::str::FromStr;
+
 use ddd_toolkit::{AggregateRoot, Entity};
 use time::{Duration, OffsetDateTime};
 
 use super::event::AuthorizationRequestEvent;
+use crate::error::DomainError;
 use crate::{
     AuthorizationRequestId, ClientId, OpaqueToken, RedirectUri, ScopeSet, State, Subject, TokenHash,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AuthorizationRequestStatus {
     Pending,
     Approved,
     Denied,
+}
+
+impl AuthorizationRequestStatus {
+    /// The string stored in databases and exchanged in wire formats.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+        }
+    }
+}
+
+impl FromStr for AuthorizationRequestStatus {
+    type Err = DomainError;
+    fn from_str(s: &str) -> Result<Self, DomainError> {
+        match s {
+            "pending" => Ok(Self::Pending),
+            "approved" => Ok(Self::Approved),
+            "denied" => Ok(Self::Denied),
+            _ => Err(DomainError::invalid(
+                "authorization_request_status",
+                "unknown value",
+            )),
+        }
+    }
 }
 
 /// Input of [`AuthorizationRequest::create`].

@@ -98,10 +98,31 @@ impl FromStr for GrantType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ClientStatus {
     Active,
     Disabled,
+}
+
+impl ClientStatus {
+    /// The string stored in databases and exchanged in wire formats.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+impl FromStr for ClientStatus {
+    type Err = DomainError;
+    fn from_str(s: &str) -> Result<Self, DomainError> {
+        match s {
+            "active" => Ok(Self::Active),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err(DomainError::invalid("client_status", "unknown value")),
+        }
+    }
 }
 
 /// Input of [`Client::register`].
@@ -471,12 +492,9 @@ impl Client {
             ));
         }
         for uri in &self.redirect_uris {
-            let ok = match uri.scheme().as_str() {
+            let ok = match uri.scheme() {
                 "https" => true,
-                "http" => matches!(
-                    uri.host().as_deref(),
-                    Some("localhost" | "127.0.0.1" | "[::1]")
-                ),
+                "http" => matches!(uri.host(), Some("localhost" | "127.0.0.1" | "[::1]")),
                 _ => self.client_type == ClientType::Public,
             };
             if !ok {

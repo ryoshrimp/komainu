@@ -24,7 +24,7 @@ impl From<StoreError> for AuthorizeError {
 }
 
 /// Errors that must not be reported to the client's redirect URI (RFC 6749 §4.1.2.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum NonRedirectableError {
     #[error("duplicate client_id or redirect_uri")]
     DuplicateParameter,

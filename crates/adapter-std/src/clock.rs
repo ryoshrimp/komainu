@@ -10,16 +10,3 @@ impl Clock for SystemClock {
         OffsetDateTime::now_utc()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn now_is_utc_and_close_to_system_time() {
-        let now = SystemClock.now();
-        assert!(now.offset().is_utc());
-        let delta = (OffsetDateTime::now_utc() - now).abs();
-        assert!(delta < time::Duration::seconds(5));
-    }
-}

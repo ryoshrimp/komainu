@@ -11,6 +11,8 @@ publish = false
 komainu-application.workspace = true
 komainu-domain.workspace = true
 time.workspace = true
+
+[dev-dependencies]
 uuid.workspace = true
 
 [lints]
