@@ -16,3 +16,6 @@ tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
