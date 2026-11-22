@@ -1,0 +1,33 @@
+[package]
+name = "komainu-http"
+description = "HTTP endpoints and screens of the komainu authorization server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+komainu-application.workspace = true
+komainu-domain.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+askama.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+form_urlencoded.workspace = true
+base64.workspace = true
+url.workspace = true
+time.workspace = true
+uuid = { workspace = true, features = ["v7"] }
+tracing.workspace = true
+metrics.workspace = true
+subtle.workspace = true
+
+[dev-dependencies]
+komainu-testing.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+http-body-util.workspace = true
+
+[lints]
+workspace = true

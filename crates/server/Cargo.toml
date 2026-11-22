@@ -1,0 +1,47 @@
+[package]
+name = "komainu-server"
+description = "Standalone komainu OAuth 2.0 authorization server binary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "komainu"
+path = "src/main.rs"
+
+[features]
+# Enables tests that start PostgreSQL with testcontainers.
+pg-tests = []
+
+[dependencies]
+komainu-domain.workspace = true
+komainu-application.workspace = true
+komainu-adapter-postgres.workspace = true
+komainu-adapter-std.workspace = true
+komainu-http.workspace = true
+tokio = { workspace = true, features = ["full"] }
+axum.workspace = true
+clap.workspace = true
+figment.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
+url.workspace = true
+time = { workspace = true, features = ["formatting"] }
+anyhow.workspace = true
+
+[dev-dependencies]
+figment = { workspace = true, features = ["test"] }
+assert_cmd.workspace = true
+predicates.workspace = true
+reqwest.workspace = true
+testcontainers-modules.workspace = true
+komainu-testing.workspace = true
+sqlx.workspace = true
+
+[lints]
+workspace = true

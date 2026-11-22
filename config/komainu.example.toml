@@ -1,0 +1,49 @@
+# komainu example configuration. Every item is shown with its default value.
+# Environment variables override this file: KOMAINU_<SECTION>__<KEY>, for example
+# KOMAINU_DATABASE__URL. [[scopes]] cannot be set through the environment.
+
+[server]
+listen = "0.0.0.0:8080"
+public_base_url = "https://auth.example.com"  # required
+allow_insecure_http = false                   # true allows http:// in public_base_url (local dev only)
+shutdown_timeout_secs = 30
+
+[ops]
+listen = "127.0.0.1:9090"
+
+[database]
+url = "postgres://komainu:komainu@localhost:5432/komainu"  # required
+max_connections = 10
+acquire_timeout_secs = 5
+
+[session]
+cookie_secure = true
+ttl_secs = 28800
+
+[oauth]
+authorization_code_ttl_secs = 60
+access_token_ttl_secs = 3600
+refresh_token_ttl_secs = 2592000
+authorization_request_ttl_secs = 600
+require_state = false
+
+[clients]
+allow_public = false
+
+[[scopes]]
+name = "read"
+description = "Read your data"
+
+[[scopes]]
+name = "write"
+description = "Modify your data"
+
+[cleanup]
+enabled = true
+interval_secs = 600
+grace_secs = 86400
+audit_retention_days = 90
+
+[log]
+format = "json"   # "json" | "pretty"
+filter = "info"   # tracing EnvFilter syntax. RUST_LOG overrides it.

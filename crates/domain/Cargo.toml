@@ -1,0 +1,19 @@
+[package]
+name = "komainu-domain"
+description = "Domain model of the komainu OAuth 2.0 authorization server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ddd-toolkit = { workspace = true, features = ["derive", "secret", "serde"] }
+time.workspace = true
+uuid.workspace = true
+url.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

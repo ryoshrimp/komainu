@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Authorize access{% endblock %}
+{% block content %}
+<h1>{{ client_name }} wants to access your account</h1>
+<p>This application is requesting permission to:</p>
+<ul>
+{% for scope in scopes %}
+<li><strong>{{ scope.name }}</strong>{% if !scope.description.is_empty() %}: {{ scope.description }}{% endif %}</li>
+{% endfor %}
+</ul>
+<form method="post" action="{{ base_url }}/authorize/decision">
+<input type="hidden" name="request_id" value="{{ request_id }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+<button type="submit" name="decision" value="approve">Allow</button>
+<button type="submit" name="decision" value="deny">Deny</button>
+</form>
+{% endblock %}
