@@ -2,7 +2,7 @@
 
 - 状態: 草案
 - 最終更新: 2026-11-22
-- 関連: [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749)、[ddd-toolkit](https://github.com/ryoshrimp/ddd-toolkit)（0.4.7 時点）
+- 関連: [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749)、[ddd-toolkit](https://github.com/ryoshrimp/ddd-toolkit)（0.5.0 時点）
 
 ## 1. 概要
 
@@ -80,10 +80,10 @@ RFC の節番号は RFC 6749 のもの。
 
 ### 2.5 前提と制約
 
-- Rust stable（1.100 で確認）、edition 2024。MSRV は定めない。
+- Rust stable（1.100 で確認）、edition 2024。MSRV は定めない（ddd-toolkit 0.5.0 の MSRV は 1.88 なので、1.100 で満たす）。
 - 非同期ランタイムは tokio。ただし `komainu-domain` と `komainu-application` は tokio に依存しない。
 - DB は PostgreSQL 16 以上。
-- ddd-toolkit は `komainu-domain` だけが依存し、使うのは derive（`ValueObject` / `Entity` / `AggregateRoot` / `DomainEvent`）と `Secret<T>` に限る。Repository などの port は komainu で独自に定義する。破壊的変更の影響をドメイン層に閉じ込めるため。
+- ddd-toolkit は `komainu-domain` だけが依存し、使うのは derive（`ValueObject` / `Entity` / `AggregateRoot` / `DomainEvent`）と `Secret<T>` に限る。ほかの crate は domain が再エクスポートする `komainu_domain::Secret` と `komainu_domain::AggregateRoot`（`pull_events` のため）だけを使う。Repository などの port は komainu で独自に定義する。破壊的変更の影響をドメイン層に閉じ込めるため。
 - ライセンスは MIT OR Apache-2.0（ddd-toolkit と同じ）。
 - 既存のコードはない（README.md だけ）。命名は Rust の標準（crate はケバブケース、型は UpperCamelCase）に従う。
 - コードコメントと rustdoc は英語で書く（OSS 公開のため）。
@@ -144,6 +144,7 @@ graph TD
 | メトリクス | metrics 0.24 + metrics-exporter-prometheus 0.18 | facade とエクスポーターを分けられる | prometheus crate |
 | 結合テスト | testcontainers-modules 0.15（`postgres`） | 実 DB で原子性を確かめるため | 共有 DB |
 | E2E テスト | reqwest 0.12（`rustls-tls`, `cookies`、自動リダイレクト無効） | — | — |
+| DDD の部品 | ddd-toolkit 0.5（facade 0.5.0 = core 0.5.0 + macro 0.6.0。workspace 側で `default-features = false`） | 自作。derive と `Secret<T>` だけを使う（§2.5） | — |
 | エラー型 | thiserror 2 | — | anyhow（ライブラリ crate では使わない。server の `run()` と CLI の最上位のエラー表示だけ可） |
 
 ### 3.2 主要な流れ
@@ -247,15 +248,15 @@ graph LR
 
 - 依存: なし
 - 対象: `Cargo.toml`（workspace）、`crates/*/Cargo.toml` と空の `src/lib.rs`（server は `src/main.rs`）、`rust-toolchain.toml`（`channel = "1.100"`、`components = ["rustfmt", "clippy"]`）、`LICENSE-MIT`、`LICENSE-APACHE`、`.github/workflows/ci.yml`、`.gitignore`
-- 内容: §3 の 7 crate を作る。`[workspace.dependencies]` に §3.1 の依存を版付きで並べ、各 crate は `workspace = true` で参照する。`[workspace.lints]` で `unsafe_code = "forbid"`、clippy の `all = "warn"` を設定する。CI で fmt、clippy（`-D warnings`）、test を走らせる。testcontainers を使うテストは `--features pg-tests` のときだけ動かす（CI の ubuntu ランナーでは有効にする）。
-- 完了条件: `cargo build --workspace` と `cargo clippy --workspace --all-targets -- -D warnings` が通る。§4 の依存の向きが Cargo.toml で守られている。
+- 内容: §3 の 7 crate を作る。`[workspace.dependencies]` に §3.1 の依存を版付きで並べ、各 crate は `workspace = true` で参照する。ddd-toolkit は workspace 側を `{ version = "0.5", default-features = false }` とし、komainu-domain 側で `{ workspace = true, features = ["derive", "secret", "serde"] }` とする（メンバー側の `default-features = false` は Cargo に無視されるため）。`[workspace.lints]` で `unsafe_code = "forbid"`、clippy の `all = "warn"` を設定する。CI で fmt、clippy（`-D warnings`）、test を走らせる。testcontainers を使うテストは `--features pg-tests` のときだけ動かす（CI の ubuntu ランナーでは有効にする）。
+- 完了条件: `cargo build --workspace` と `cargo clippy --workspace --all-targets -- -D warnings` が通る。§4 の依存の向きが Cargo.toml で守られている。`cargo tree -p komainu-domain -e features -i ddd-toolkit` に `cqrs`、`event_sourcing`、`delivery`、`process` が出ない。
 - 検証: `cargo build --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
 
 ### T2. domain: 共通の値オブジェクト
 
 - 依存: T1
 - 対象: `crates/domain/src/{lib.rs, error.rs, shared/*.rs}`
-- 内容: [domain.md §共通の値オブジェクト](domain.md#共通の値オブジェクト) の `ClientId`、`Subject`、`ScopeToken`、`ScopeSet`、`RedirectUri`、`State`、`TokenHash`、`OpaqueToken`、`UserId`、`Username`、`Password`、`NewPassword`、`PasswordHash`、列挙型（`ClientType` など）と `DomainError`。
+- 内容: [domain.md §共通の値オブジェクト](domain.md#共通の値オブジェクト) の `ClientId`、`ClientName`、`Subject`、`ScopeToken`、`ScopeSet`、`RedirectUri`、`State`、`TokenHash`、`OpaqueToken`、`UserId`、`Username`、`Password`、`NewPassword`、`PasswordHash`、`AuthorizationRequestId`、`GrantId`、列挙型（`ClientType` など）と `DomainError`。
 - 完了条件: domain.md の該当する受け入れ条件がすべて単体テストになっていて、通る。
 - 検証: `cargo test -p komainu-domain`
 
@@ -391,12 +392,12 @@ graph LR
 
 | ID | 内容 | 仮の扱い | 決める人・時期 |
 |---|---|---|---|
-| Q-1 | ddd-toolkit の改修後の版への追従 | 今回は crates.io の `0.4.7` を使う（`ddd-toolkit = "0.4"`）。改修版が出たら domain だけを直す。影響が分かっている箇所: `Secret::as_inner` の名前（domain の `expose`）、`Secret` の `Clone` がなくなること（`PgStoreConfig` と server の `Config` の `derive(Clone)` をやめ、`Arc` で共有する） | ユーザー・toolkit の改修版が出たとき |
+| Q-1 | ddd-toolkit の次の破壊的変更（0.6 以降）への追従 | crates.io の `0.5.0` を使う（`ddd-toolkit = "0.5"`）。0.4.7 からの追従は反映済み（`Secret` の import パス、`expose_secret_ref`、`Secret` の `Clone` と `PartialEq` の廃止、validator が `&Self` を受け取ること。[domain.md §実装メモ](domain.md#実装メモ)）。次の版が出たら domain だけを直す | ユーザー・toolkit の次の版が出たとき |
 | Q-2 | クライアントシークレットをローテーションしたときの猶予期間 | 猶予なし（古いシークレットはすぐ無効になる） | ユーザー・運用を始める前 |
 | Q-3 | 画面のカスタマイズ（ブランディング、多言語） | askama の固定テンプレート（英語）。差し替えは組み込み利用者が `komainu-http` を使わずに画面を自作する形 | ユーザー・OSS 公開前 |
 | Q-4 | リダイレクト型の外部 IdP 連携を認証 port でどう扱うか | 今回はユーザー名とパスワードの検証 port だけ | ユーザー・OIDC のステップの前 |
 | Q-5 | リフレッシュトークンの絶対的な期限（系列全体の寿命） | なし（ローテーションのたびに 30 日の期限を引き直す） | ユーザー・運用を始める前 |
-| Q-6 | 監査ログの外部出力（SIEM 連携、outbox） | DB の `audit_events` だけ。ddd-toolkit の outbox の採用は改修版を見てから | ユーザー・OSS 公開前 |
+| Q-6 | 監査ログの外部出力（SIEM 連携、outbox） | DB の `audit_events` だけ。ddd-toolkit 0.5.0 の outbox は experimental な `ddd_toolkit::delivery` に移ったので、experimental でなくなるまで採用しない | ユーザー・OSS 公開前 |
 | Q-7 | CSRF Cookie が 1 つだけなこと | `komainu_csrf` は 1 つなので、同じブラウザの複数のタブで同時に認可を進めると、後から始めたほうの値で上書きされ、先のタブは `CsrfMismatch` になる。Cookie 名に `request_id` を含める方式は採らない（Cookie が溜まるため） | ユーザー・OSS 公開前 |
 | Q-8 | パスワード変更時のセッションと Grant の扱い | `set_user_password` は既存のログインセッションも Grant も失効させない | ユーザー・運用を始める前 |
 | Q-9 | 認可エンドポイントでの `StoreError` | リダイレクトしてよい段階でも `500` のエラー画面にする（§4.1.2.1 の `server_error` / `temporarily_unavailable` のリダイレクトは使わない） | ユーザー・OSS 公開前 |

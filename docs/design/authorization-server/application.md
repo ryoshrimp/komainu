@@ -274,7 +274,8 @@ impl MaintenanceService { pub fn new(deps: Dependencies) -> Self; }
 ### トランザクションの共通ルール
 
 - ユースケース 1 回の呼び出しで UoW を 1 つ使う（例外は下に書いたものだけ）。
-- 集約を変更したら、`pull_events()` で取り出したドメインイベントを [§監査イベント](#監査イベント) の表に従って `AuditEvent` に変え、同じ UoW で `append` してから `commit` する。
+- `Secret` か `OpaqueToken` を（`Option` や enum の中も含めて）持つ型（`LoginCredentials`、`ClientAuthentication`、`StartResult`、`TokenResponse`、`RegisteredClient` など）は `Debug` だけを derive し、`Clone`・`PartialEq` は付けない（[domain.md §共通の方針](domain.md#共通の方針)）。テストは `matches!` と、`expose()`・`expose_secret_ref()` で取り出した値で比べる。エラー型は、上で `#[derive(.., Clone, ..)]` と書いたもの以外は `#[derive(Debug, thiserror::Error)]` とする。
+- 集約を変更したら、`pull_events()`（`use komainu_domain::AggregateRoot;` が要る）で取り出したドメインイベントを [§監査イベント](#監査イベント) の表に従って `AuditEvent` に変え、同じ UoW で `append` してから `commit` する。
 - エラーを返すときは UoW を commit せずに捨てる。ただし次の 3 つは、記録を残すために commit してからエラーを返す。
   1. 認可コードの再利用を検知して Grant を失効させたとき
   2. リフレッシュトークンの再利用を検知して Grant を失効させたとき
@@ -329,7 +330,7 @@ pub struct LoginFormView { pub client_name: String }
 pub struct LoggedIn {
     pub session_token: OpaqueToken,
     pub expires_at: OffsetDateTime,
-    /// Equals ApplicationConfig::session_ttl. http uses it for the cookie Max-Age.
+    /// Equals ApplicationConfig::login_session_ttl. http uses it for the cookie Max-Age.
     pub max_age: time::Duration,
 }
 
@@ -433,7 +434,9 @@ pub enum ClientAuthentication {
     None,
 }
 
-#[derive(Debug, Clone, Default)]
+/// Debug is hand-written (N-3). It prints every field in declaration order like the derived Debug,
+/// except that code and refresh_token print Some([REDACTED]) when Some and None when None.
+#[derive(Clone, Default)]
 pub struct TokenRequest {
     pub grant_type: Option<String>,
     pub code: Option<String>,
@@ -696,6 +699,10 @@ impl AuditActor { pub fn as_str(&self) -> &'static str; }   // "client" / "user"
 ## 受け入れ条件
 
 以下はすべて、`komainu-testing` のインメモリ adapter、`FixedClock`、`SequenceRandom` を使い、`crates/application/tests/*.rs`（結合テスト。ファイルは `admin.rs`、`authorization.rs`、`token.rs`、`maintenance.rs`）で確かめる。
+
+TokenRequest（`token.rs`）:
+
+- `grant_type = Some("authorization_code")`、`code = Some("abc123")`、`refresh_token = Some("rt-xyz")`、ほかは `None` と空の `TokenRequest` の `format!("{:?}", req)` は `TokenRequest { grant_type: Some("authorization_code"), code: Some([REDACTED]), redirect_uri: None, scope: None, refresh_token: Some([REDACTED]), duplicated: [] }` と完全に一致し、`abc123` と `rt-xyz` を含まない。
 
 AuthorizationService:
 

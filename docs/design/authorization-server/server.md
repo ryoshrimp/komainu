@@ -110,6 +110,8 @@ filter = "info"   # tracing EnvFilter syntax. RUST_LOG overrides it.
 
 `Config` の `Debug` 出力では `database.url` を `[REDACTED]` にする（`Secret<String>` で持てば、`Secret` の `Debug` がそう出すので手書きは要らない）。
 
+`Config` は `#[derive(Debug, serde::Deserialize)]` だけを付け、`Clone` と `PartialEq` は derive しない（`Secret` がどちらも実装しないため）。`wiring` は `Config` を値で受け取り、`database.url` を `PgStoreConfig` へ move する（`clone_secret()` で複製しない）。ほかの設定は `wiring` の中で各 crate の設定へ写す。`database.url` の型が違う（TOML で `url = 123` など）ときの deserialize のエラーは、`Secret` が中身を出さないように文言を `failed to deserialize secret` に固定する（ddd-toolkit 0.5.0 の仕様）。figment がキー名を付けるので、終了コード 2 のメッセージには `database.url` と `failed to deserialize secret` が含まれる。
+
 ## CLI
 
 ```
@@ -230,7 +232,8 @@ pub async fn run_periodic(service: MaintenanceService, interval: std::time::Dura
 設定（単体テスト、DB 不要）:
 
 - `config/komainu.example.toml` を読み込むと検証を通る。
-- `figment::Jail` の中で同じファイルを置き、`KOMAINU_DATABASE__URL=postgres://other/db` を設定すると、その値が使われる。
+- TOML で `[database]` に `url = 123` と書いたとき、終了コード 2 で、標準エラーに `database.url` と `failed to deserialize secret` が含まれる。
+- `figment::Jail` の中で同じファイルを置き、`KOMAINU_DATABASE__URL=postgres://other/db` を設定すると、その値が使われる（`config.database.url.expose_secret_ref()` で比べる）。
 - `public_base_url = "http://auth.example.com"`（`allow_insecure_http` なし）は終了コード 2 になる。
 - `[[scopes]]` に同じ `name` が 2 つあれば終了コード 2。
 - `format!("{:?}", config)` に `database.url` のパスワードが含まれない。
