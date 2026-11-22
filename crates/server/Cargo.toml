@@ -31,6 +31,7 @@ tracing-subscriber.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 url.workspace = true
+time = { workspace = true, features = ["formatting"] }
 anyhow.workspace = true
 
 [dev-dependencies]
@@ -40,6 +41,7 @@ predicates.workspace = true
 reqwest.workspace = true
 testcontainers-modules.workspace = true
 komainu-testing.workspace = true
+sqlx.workspace = true
 
 [lints]
 workspace = true
