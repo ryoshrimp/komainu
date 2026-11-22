@@ -1,0 +1,35 @@
+use axum::extract::Request;
+use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, REFERRER_POLICY};
+use axum::http::{HeaderName, HeaderValue};
+use axum::middleware::Next;
+use axum::response::Response;
+
+const X_FRAME_OPTIONS: HeaderName = HeaderName::from_static("x-frame-options");
+const X_CONTENT_TYPE_OPTIONS: HeaderName = HeaderName::from_static("x-content-type-options");
+
+/// Adds the clickjacking, CSP, caching and referrer headers to HTML responses (N-6).
+///
+/// `form-action` is deliberately not restricted: some browsers would block the redirect to
+/// the client after consent.
+pub(crate) async fn add_security_headers(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let is_html = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html"));
+    if is_html {
+        let headers = response.headers_mut();
+        headers.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+        headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+            ),
+        );
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+        headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    }
+    response
+}
