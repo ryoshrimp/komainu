@@ -154,6 +154,7 @@ The `komainu-testkit` crate has in-memory adapters and a conformance suite
 | `komainu-adapter-std` | clock, CSPRNG and Argon2 password hasher |
 | `komainu-http` | axum router and screens |
 | `komainu-server` | the `komainu` binary |
+| `komainu-jose` | JWS, JWK and JWT with RS256 and ES256 (not yet used by the other crates) |
 
 ## Development
 

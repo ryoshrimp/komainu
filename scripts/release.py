@@ -10,6 +10,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
 ORDER = (
+    "komainu-jose",
     "komainu-domain",
     "komainu-application",
     "komainu-adapter-std",

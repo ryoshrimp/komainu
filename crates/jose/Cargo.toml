@@ -1,0 +1,32 @@
+[package]
+name = "komainu-jose"
+description = "A small JOSE implementation (JWS, JWK, JWT with RS256 and ES256) for komainu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["jose", "jwt", "jws", "jwk", "oauth"]
+categories = ["cryptography", "authentication"]
+exclude = ["fuzz/", "tests/fixtures/"]
+
+[dependencies]
+ddd-toolkit = { workspace = true, features = ["derive", "secret"] }
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+rsa.workspace = true
+p256.workspace = true
+pkcs8.workspace = true
+zeroize.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+jsonwebtoken.workspace = true
+
+[lints]
+workspace = true

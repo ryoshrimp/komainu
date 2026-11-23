@@ -22,3 +22,11 @@ jobs:
       - run: cargo clippy --workspace --all-targets --features pg-tests -- -D warnings
       - run: cargo test --workspace --features pg-tests
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories

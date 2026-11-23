@@ -39,7 +39,7 @@ class ReleaseTests(unittest.TestCase):
 
     @patch("release.subprocess.run")
     @patch("release.subprocess.check_output")
-    @patch("release.published", side_effect=[True, False, False, False, False, False, False, False])
+    @patch("release.published", side_effect=[True] + [False] * (len(release.ORDER) - 1))
     def test_publish_skips_existing_versions(self, published, metadata, run):
         metadata.return_value = self.metadata()
         release.release(publish=True)
