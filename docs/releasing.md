@@ -16,6 +16,8 @@ and wait until each one appears in the crates.io index before publishing the nex
 
 - Set the new version in `[workspace.package]` and in the `version = "..."` of every internal
   crate in `[workspace.dependencies]` of the root `Cargo.toml`.
+- Move the entries under `[Unreleased]` in `CHANGELOG.md` to a section for the new version with
+  the release date, and update the links at the bottom of the file.
 - Run the checks in the README's Development section.
 - Confirm that `cargo publish --dry-run -p komainu-domain` passes. The other crates cannot be
   verified by `--dry-run` until their dependencies are on crates.io; check that

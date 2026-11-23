@@ -12,20 +12,20 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ryoshrimp/komainu"
 
 [workspace.dependencies]
 # Internal crates
-komainu-domain = { path = "crates/domain", version = "0.1.0" }
-komainu-application = { path = "crates/application", version = "0.1.0" }
-komainu-adapter-postgres = { path = "crates/adapter-postgres", version = "0.1.0" }
-komainu-adapter-std = { path = "crates/adapter-std", version = "0.1.0" }
-komainu-testkit = { path = "crates/testkit", version = "0.1.0" }
-komainu-http = { path = "crates/http", version = "0.1.0" }
-komainu = { path = "crates/komainu", version = "0.1.0" }
+komainu-domain = { path = "crates/domain", version = "0.1.0-alpha.1" }
+komainu-application = { path = "crates/application", version = "0.1.0-alpha.1" }
+komainu-adapter-postgres = { path = "crates/adapter-postgres", version = "0.1.0-alpha.1" }
+komainu-adapter-std = { path = "crates/adapter-std", version = "0.1.0-alpha.1" }
+komainu-testkit = { path = "crates/testkit", version = "0.1.0-alpha.1" }
+komainu-http = { path = "crates/http", version = "0.1.0-alpha.1" }
+komainu = { path = "crates/komainu", version = "0.1.0-alpha.1" }
 
 # DDD building blocks (only komainu-domain depends on it)
 ddd-toolkit = { version = "0.5", default-features = false }
