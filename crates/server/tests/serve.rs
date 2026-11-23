@@ -64,6 +64,17 @@ async fn serve_health_metrics_and_sigterm() {
         .await
         .unwrap();
     assert_eq!(token.status(), 200);
+    let body: serde_json::Value = serde_json::from_str(&token.text().await.unwrap()).unwrap();
+    let access_token = body["access_token"].as_str().unwrap().to_owned();
+    let revoked = http
+        .post(format!("http://{listen}/revoke"))
+        .basic_auth(field("client_id"), Some(field("client_secret")))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(format!("token={access_token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), 200);
     let metrics = http
         .get(format!("http://{ops}/metrics"))
         .send()
@@ -75,6 +86,10 @@ async fn serve_health_metrics_and_sigterm() {
     assert!(metrics.contains("komainu_http_requests_total"), "{metrics}");
     assert!(
         metrics.contains("komainu_token_requests_total"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("komainu_revocation_requests_total"),
         "{metrics}"
     );
 

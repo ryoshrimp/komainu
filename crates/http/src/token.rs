@@ -4,11 +4,10 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use komainu_application::{TokenError, TokenRequest};
-use komainu_domain::Secret;
 use serde::Serialize;
 
-use crate::client_auth::{BodyCredentials, client_authentication};
-use crate::form::is_form_content_type;
+use crate::client_auth::client_authentication;
+use crate::form::{is_form_content_type, split_client_credentials};
 use crate::metrics::count_token_request;
 use crate::middleware::Ctx;
 use crate::oauth_error::{apply_headers, token_error_response, token_headers};
@@ -51,27 +50,11 @@ pub(crate) async fn token(
     if !is_form_content_type(&headers) {
         return failure("other", &TokenError::InvalidRequest);
     }
-    let mut client_id = Vec::new();
-    let mut client_secret = Vec::new();
-    let mut rest = Vec::new();
-    for (key, value) in form_urlencoded::parse(&body).into_owned() {
-        match key.as_str() {
-            "client_id" => client_id.push(value),
-            // Wrapped immediately so the secret is never carried around as a plain String.
-            "client_secret" => client_secret.push(Secret::new(value)),
-            _ => rest.push((key, value)),
-        }
-    }
+    let (credentials, rest) = split_client_credentials(&body);
     let request = TokenRequest::from_pairs(rest);
     let label = grant_type_label(request.grant_type.as_deref());
-    if client_id.len() > 1 || client_secret.len() > 1 {
+    let Some(credentials) = credentials else {
         return failure(label, &TokenError::InvalidRequest);
-    }
-    let credentials = BodyCredentials {
-        client_id: client_id.pop().filter(|value| !value.is_empty()),
-        client_secret: client_secret
-            .pop()
-            .filter(|secret| !secret.expose_secret_ref().is_empty()),
     };
     let authentication = match client_authentication(&headers, credentials) {
         Ok(authentication) => authentication,

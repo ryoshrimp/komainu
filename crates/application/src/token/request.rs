@@ -108,3 +108,54 @@ pub struct AccessTokenInfo {
     pub issued_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
 }
+
+/// The `token_type_hint` values (RFC 7009 §2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenTypeHint {
+    AccessToken,
+    RefreshToken,
+}
+
+impl TokenTypeHint {
+    /// Parses "access_token" / "refresh_token". Anything else is `None` (treated as no hint).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "access_token" => Some(Self::AccessToken),
+            "refresh_token" => Some(Self::RefreshToken),
+            _ => None,
+        }
+    }
+}
+
+/// Form parameters of `POST /revoke`. Empty values are treated as absent.
+#[derive(Clone, Default)]
+pub struct RevocationRequest {
+    pub token: Option<String>,
+    /// The raw value; interpreted with [`TokenTypeHint::parse`].
+    pub token_type_hint: Option<String>,
+    /// Names of the above parameters that appeared more than once.
+    pub duplicated: Vec<&'static str>,
+}
+
+impl RevocationRequest {
+    /// `client_id` and `client_secret` are not read here (the HTTP layer extracts them).
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (String, String)>) -> Self {
+        let ([token, token_type_hint], duplicated) =
+            collect_params(pairs, ["token", "token_type_hint"]);
+        Self {
+            token,
+            token_type_hint,
+            duplicated,
+        }
+    }
+}
+
+impl fmt::Debug for RevocationRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RevocationRequest")
+            .field("token", &Redacted(&self.token))
+            .field("token_type_hint", &self.token_type_hint)
+            .field("duplicated", &self.duplicated)
+            .finish()
+    }
+}

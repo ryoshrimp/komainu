@@ -17,13 +17,14 @@ async fn in_memory_store_passes() {
 }
 
 #[test]
-fn nine_cases_with_the_documented_names() {
+fn ten_cases_with_the_documented_names() {
     let names: Vec<_> = store_cases().iter().map(|case| case.name).collect();
     assert_eq!(
         names,
         [
             "client_user_session_roundtrip",
             "authorization_flow_records_roundtrip",
+            "grant_revoked_by_client_request_roundtrip",
             "audit_append_commits",
             "dropped_uow_is_rolled_back",
             "unique_violation_is_conflict",

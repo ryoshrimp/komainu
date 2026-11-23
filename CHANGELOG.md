@@ -9,6 +9,22 @@ a breaking change bumps the minor version.
 
 ## [Unreleased]
 
+### Added
+
+- Token revocation endpoint (`POST /revoke`, [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009)).
+  Revoking either an access token or a refresh token revokes the whole grant.
+- `TokenService::revoke` and the public types `RevocationRequest`, `RevocationError` and
+  `TokenTypeHint`.
+- Audit event `token_revocation.client_mismatch`.
+- Metric `komainu_revocation_requests_total`.
+- Migration `0002` (applied automatically by `migrate`) allows the revocation reason
+  `client_request`.
+
+### Changed
+
+- `AuditKind::TokenRevocationClientMismatch` and `RevocationReason::ClientRequest` were added.
+  Both enums are exhaustive, so a `match` over them without a wildcard arm no longer compiles.
+
 ## [0.1.0-alpha.1] - 2026-11-23
 
 First pre-release. komainu is an OAuth 2.0 authorization server

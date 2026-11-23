@@ -14,6 +14,7 @@ mod login;
 mod metrics;
 mod middleware;
 mod oauth_error;
+mod revoke;
 mod screens;
 mod security_headers;
 mod state;
@@ -48,6 +49,7 @@ pub fn router(state: AppState) -> Router {
         .route("/login", get(login::login_get).post(login::login_post))
         .route("/logout", post(login::logout))
         .route("/token", post(token::token))
+        .route("/revoke", post(revoke::revoke))
         .with_state(state)
         // Layers run from the last one added (outermost) to the first (innermost).
         .layer(axum::middleware::from_fn_with_state(

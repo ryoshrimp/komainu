@@ -79,6 +79,7 @@ pub enum AuditKind {
     GrantRevoked,
     TokenIssued,
     ClientAuthenticationFailed,
+    TokenRevocationClientMismatch,
 }
 
 impl AuditKind {
@@ -105,6 +106,7 @@ impl AuditKind {
             Self::GrantRevoked => "grant.revoked",
             Self::TokenIssued => "token.issued",
             Self::ClientAuthenticationFailed => "client_authentication.failed",
+            Self::TokenRevocationClientMismatch => "token_revocation.client_mismatch",
         }
     }
 }

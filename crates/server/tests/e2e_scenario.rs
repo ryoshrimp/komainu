@@ -248,6 +248,25 @@ impl Harness {
         (status, headers, serde_json::from_str(&body).unwrap())
     }
 
+    /// `POST /revoke` with HTTP Basic credentials.
+    async fn revoke(
+        &self,
+        client: (&str, &str),
+        pairs: &[(&str, &str)],
+    ) -> (StatusCode, reqwest::header::HeaderMap, String) {
+        let response = self
+            .http
+            .post(format!("{}/revoke", self.base))
+            .basic_auth(client.0, Some(client.1))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(form(pairs))
+            .send()
+            .await
+            .unwrap();
+        let (status, headers) = (response.status(), response.headers().clone());
+        (status, headers, response.text().await.unwrap())
+    }
+
     async fn exchange_code(&self, client: (&str, &str), code: &str) -> serde_json::Value {
         let (status, headers, body) = self
             .token(
@@ -572,7 +591,19 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
     let response = h.authorize(&quiet_id, "read").await;
     assert_eq!(response.status(), 302);
     let code = query(&location(&response), "code").expect("code for skip_consent client");
-    secrets.push(("code quiet", code));
+    secrets.push(("code quiet", code.clone()));
+
+    // The revocation endpoint revokes the whole grant, access token included.
+    let quiet = (quiet_id.as_str(), quiet_secret.as_str());
+    let quiet_tokens = h.exchange_code(quiet, &code).await;
+    let quiet_access = text(&quiet_tokens, "access_token");
+    secrets.push(("quiet access token", quiet_access.clone()));
+    assert!(verify(quiet_access.clone()).await.is_some());
+    let (status, headers, body) = h.revoke(quiet, &[("token", &quiet_access)]).await;
+    assert_eq!(status, 200);
+    assert_eq!(body, "");
+    assert_eq!(headers[CACHE_CONTROL], "no-store");
+    assert!(verify(quiet_access).await.is_none());
 
     // Logout ends the session: the next authorization asks for a login again.
     let response = h
@@ -671,11 +702,12 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
         ("authorization_code.issued", 3),
         ("authorization_code.replay_detected", 1),
         ("refresh_token.replay_detected", 1),
-        // Both replays revoke their grant, and disabling the service client revokes its grant.
-        ("grant.revoked", 3),
+        // Both replays revoke their grant, disabling the service client revokes its grant, and
+        // the revocation endpoint revokes the quiet client's grant.
+        ("grant.revoked", 4),
         ("client_authentication.failed", 1),
-        // Two code exchanges, one refresh and the client credentials call.
-        ("token.issued", 4),
+        // Three code exchanges, one refresh and the client credentials call.
+        ("token.issued", 5),
     ] {
         assert_eq!(audit.get(kind).copied(), Some(count), "{kind}: {audit:?}");
     }

@@ -2,7 +2,7 @@ use axum::Json;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, PRAGMA, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use komainu_application::TokenError;
+use komainu_application::{RevocationError, TokenError};
 use serde::Serialize;
 
 pub(crate) const JSON_CONTENT_TYPE: &str = "application/json;charset=UTF-8";
@@ -53,6 +53,50 @@ pub(crate) fn token_error_response(error: &TokenError) -> Response {
     let body = ErrorBody {
         error: error.code(),
         error_description: description(error),
+    };
+    let mut response = (status, Json(body)).into_response();
+    apply_headers(&mut response, headers);
+    response
+}
+
+/// `Cache-Control: no-store` and `Pragma: no-cache` only.
+pub(crate) fn no_store_headers() -> HeaderMap {
+    let mut headers = token_headers();
+    headers.remove(CONTENT_TYPE);
+    headers
+}
+
+/// RFC 7009 section 2.2.1 error response (same shape as the token endpoint's).
+pub(crate) fn revocation_error_response(error: &RevocationError) -> Response {
+    let (status, description) = match error {
+        RevocationError::InvalidRequest => (StatusCode::BAD_REQUEST, "The request is malformed."),
+        RevocationError::InvalidClient { .. } => {
+            (StatusCode::UNAUTHORIZED, "Client authentication failed.")
+        }
+        RevocationError::InvalidGrant => (
+            StatusCode::BAD_REQUEST,
+            "The token was issued to another client.",
+        ),
+        RevocationError::Server(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Temporarily unavailable.",
+        ),
+    };
+    let mut headers = token_headers();
+    if matches!(
+        error,
+        RevocationError::InvalidClient {
+            basic_attempted: true
+        }
+    ) {
+        headers.insert(
+            WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Basic realm="komainu""#),
+        );
+    }
+    let body = ErrorBody {
+        error: error.code(),
+        error_description: description,
     };
     let mut response = (status, Json(body)).into_response();
     apply_headers(&mut response, headers);

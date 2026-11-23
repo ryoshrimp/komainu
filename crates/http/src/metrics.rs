@@ -39,6 +39,10 @@ pub(crate) fn count_token_request(grant_type: &'static str, result: &str) {
     .increment(1);
 }
 
+pub(crate) fn count_revocation_request(result: &str) {
+    counter!("komainu_revocation_requests_total", "result" => result.to_owned()).increment(1);
+}
+
 pub(crate) fn count_authorization_request(result: &'static str) {
     counter!("komainu_authorization_requests_total", "result" => result).increment(1);
 }
