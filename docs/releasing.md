@@ -1,16 +1,19 @@
 # Releasing to crates.io
 
-komainu is published as eight crates. They depend on each other, so they are published in this
+komainu is published as nine crates. They depend on each other, so they are published in this
 order (the order is encoded in `scripts/release.py`):
 
-1. `komainu-domain`
-2. `komainu-application`
-3. `komainu-adapter-std`
-4. `komainu-testkit`
-5. `komainu-adapter-postgres`
-6. `komainu-http`
-7. `komainu`
-8. `komainu-server`
+1. `komainu-jose`
+2. `komainu-domain`
+3. `komainu-application`
+4. `komainu-adapter-std`
+5. `komainu-testkit`
+6. `komainu-adapter-postgres`
+7. `komainu-http`
+8. `komainu`
+9. `komainu-server`
+
+`komainu-jose` does not depend on the other crates, so it goes first.
 
 `komainu-testkit` comes before `komainu-adapter-postgres` and `komainu-http` because
 `komainu-adapter-postgres`, `komainu-http`, `komainu` and `komainu-server` all have a versioned
@@ -37,7 +40,7 @@ Publishing uses GitHub Actions OIDC, not a stored crates.io API token.
 
 1. Create the GitHub `crates-io` deployment environment. Restrict deployment branches to `main`;
    enable required reviewers if your plan supports it.
-2. As an owner on crates.io, open the **Trusted Publishing** settings of **each** of the eight
+2. As an owner on crates.io, open the **Trusted Publishing** settings of **each** of the nine
    crates above and add the same GitHub publisher:
 
    | Field | Value |
