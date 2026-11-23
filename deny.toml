@@ -1,0 +1,10 @@
+[advisories]
+version = 2
+yanked = "deny"
+unmaintained = "workspace"
+ignore = [
+    # cookie 0.18.2 comes in only through reqwest (cookie_store) in komainu-server's
+    # dev-dependencies (tests). Private cookies are not used. Fix in a separate change
+    # (`cargo update -p cookie`).
+    "RUSTSEC-2026-0594",
+]

@@ -9,6 +9,12 @@ a breaking change bumps the minor version.
 
 ## [Unreleased]
 
+### Added
+
+- New crate `komainu-jose`: JWS Compact Serialization, JWK / JWK Set and JWT with RS256 and
+  ES256, built on RustCrypto. Nothing else in the workspace depends on it yet.
+- `cargo deny check advisories` in CI (`deny.toml`).
+
 ## [0.1.0-alpha.2] - 2026-11-24
 
 ### Added
