@@ -9,6 +9,8 @@ a breaking change bumps the minor version.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-11-24
+
 ### Added
 
 - Token revocation endpoint (`POST /revoke`, [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009)).
@@ -19,6 +21,9 @@ a breaking change bumps the minor version.
 - Metric `komainu_revocation_requests_total`.
 - Migration `0002` (applied automatically by `migrate`) allows the revocation reason
   `client_request`.
+- Store conformance case `grant_revoked_by_client_request_roundtrip` in
+  `komainu_testkit::conformance`. A store must persist the new revocation reason
+  `client_request` to pass the suite.
 
 ### Changed
 
@@ -73,5 +78,6 @@ in an axum application.
   (`komainu_testkit::conformance`).
 - `minimal` and `custom_screens` examples in the `komainu` crate.
 
-[Unreleased]: https://github.com/ryoshrimp/komainu/compare/v0.1.0-alpha.1...HEAD
+[Unreleased]: https://github.com/ryoshrimp/komainu/compare/v0.1.0-alpha.2...HEAD
+[0.1.0-alpha.2]: https://github.com/ryoshrimp/komainu/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/ryoshrimp/komainu/releases/tag/v0.1.0-alpha.1
