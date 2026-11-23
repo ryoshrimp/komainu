@@ -5,7 +5,38 @@ use komainu_application::NonRedirectableError;
 use komainu_domain::{AuthorizationRequestId, OpaqueToken, Secret};
 use subtle::ConstantTimeEq;
 
+use crate::client_auth::BodyCredentials;
 use crate::cookies::{self, CSRF_COOKIE};
+
+/// Splits a form body into `client_id`, `client_secret` and the other pairs.
+///
+/// The credentials are `None` when either of them occurs more than once. Empty values are
+/// treated as absent.
+pub(crate) fn split_client_credentials(
+    body: &Bytes,
+) -> (Option<BodyCredentials>, Vec<(String, String)>) {
+    let mut client_id = Vec::new();
+    let mut client_secret = Vec::new();
+    let mut rest = Vec::new();
+    for (key, value) in form_urlencoded::parse(body).into_owned() {
+        match key.as_str() {
+            "client_id" => client_id.push(value),
+            // Wrapped immediately so the secret is never carried around as a plain String.
+            "client_secret" => client_secret.push(Secret::new(value)),
+            _ => rest.push((key, value)),
+        }
+    }
+    if client_id.len() > 1 || client_secret.len() > 1 {
+        return (None, rest);
+    }
+    let credentials = BodyCredentials {
+        client_id: client_id.pop().filter(|value| !value.is_empty()),
+        client_secret: client_secret
+            .pop()
+            .filter(|secret| !secret.expose_secret_ref().is_empty()),
+    };
+    (Some(credentials), rest)
+}
 
 /// Whether the `Content-Type` is `application/x-www-form-urlencoded` (parameters allowed).
 pub(crate) fn is_form_content_type(headers: &HeaderMap) -> bool {

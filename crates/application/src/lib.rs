@@ -33,5 +33,6 @@ pub use ids::{new_opaque_token, new_uuid_v7};
 pub use maintenance::{MaintenanceService, PurgeReport};
 pub use port::*;
 pub use token::{
-    AccessTokenInfo, ClientAuthentication, TokenError, TokenRequest, TokenResponse, TokenService,
+    AccessTokenInfo, ClientAuthentication, RevocationError, RevocationRequest, TokenError,
+    TokenRequest, TokenResponse, TokenService, TokenTypeHint,
 };

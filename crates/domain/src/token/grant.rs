@@ -19,6 +19,7 @@ pub enum RevocationReason {
     RefreshTokenReplay,
     ClientDisabled,
     UserDisabled,
+    ClientRequest,
 }
 
 impl RevocationReason {
@@ -29,6 +30,7 @@ impl RevocationReason {
             Self::RefreshTokenReplay => "refresh_token_replay",
             Self::ClientDisabled => "client_disabled",
             Self::UserDisabled => "user_disabled",
+            Self::ClientRequest => "client_request",
         }
     }
 }
@@ -41,6 +43,7 @@ impl FromStr for RevocationReason {
             "refresh_token_replay" => Ok(Self::RefreshTokenReplay),
             "client_disabled" => Ok(Self::ClientDisabled),
             "user_disabled" => Ok(Self::UserDisabled),
+            "client_request" => Ok(Self::ClientRequest),
             _ => Err(DomainError::invalid("revocation_reason", "unknown value")),
         }
     }
@@ -236,6 +239,15 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn client_request_reason_round_trips_as_str() {
+        assert_eq!(RevocationReason::ClientRequest.as_str(), "client_request");
+        assert_eq!(
+            "client_request".parse::<RevocationReason>().unwrap(),
+            RevocationReason::ClientRequest
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 mod common;
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use common::*;
@@ -12,7 +13,8 @@ use komainu_application::{
     TokenError, TokenRequest, TokenService,
 };
 use komainu_domain::*;
-use sqlx::Row;
+use sqlx::migrate::{Migration, MigrationType, Migrator};
+use sqlx::{Row, SqlSafeStr};
 
 async fn commit_with<F>(db: &TestDb, f: F)
 where
@@ -32,6 +34,34 @@ async fn migrate_twice_succeeds() {
     let pool = connect(&config).await.unwrap();
     migrate(&pool).await.unwrap();
     PgUnitOfWorkFactory::new(pool).ping().await.unwrap();
+}
+
+#[tokio::test]
+async fn migrate_upgrades_from_0001() {
+    let db = start_raw().await;
+    let init = Migration::new(
+        1,
+        Cow::Borrowed("init"),
+        MigrationType::Simple,
+        include_str!("../migrations/0001_init.sql").into_sql_str(),
+        false,
+    );
+    Migrator::with_migrations(vec![init])
+        .run(&db.pool)
+        .await
+        .unwrap();
+    migrate(&db.pool).await.unwrap();
+    migrate(&db.pool).await.unwrap();
+    seed_client(&db, "c1").await;
+    commit_with(&db, |uow| {
+        Box::pin(async move {
+            let mut grant = Grant::from_record(grant_record(1, "c1"));
+            uow.grants().insert(&grant).await.unwrap();
+            grant.revoke(RevocationReason::ClientRequest, t(5));
+            uow.grants().update(&grant).await.unwrap();
+        })
+    })
+    .await;
 }
 
 #[tokio::test]

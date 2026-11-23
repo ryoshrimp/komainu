@@ -44,9 +44,10 @@ macro_rules! case {
     };
 }
 
-pub(super) static CASES: [StoreCase; 9] = [
+pub(super) static CASES: [StoreCase; 10] = [
     case!(client_user_session_roundtrip),
     case!(authorization_flow_records_roundtrip),
+    case!(grant_revoked_by_client_request_roundtrip),
     case!(audit_append_commits),
     case!(dropped_uow_is_rolled_back),
     case!(unique_violation_is_conflict),
@@ -371,6 +372,40 @@ async fn audit_append_commits(store: Store) -> CaseResult {
     let mut uow = store.begin().await?;
     uow.audit_log().append(&event).await?;
     uow.commit().await?;
+    Ok(())
+}
+
+async fn grant_revoked_by_client_request_roundtrip(store: Store) -> CaseResult {
+    seed_client(&store, "c1").await?;
+    let record = GrantRecord {
+        id: gid(1),
+        client_id: cid("c1"),
+        subject: None,
+        scope: ScopeSet::empty(),
+        origin: GrantOrigin::ClientCredentials,
+        status: GrantStatus::Active,
+        created_at: t(0),
+    };
+    {
+        let mut uow = store.begin().await?;
+        let mut grant = Grant::from_record(record.clone());
+        uow.grants().insert(&grant).await?;
+        grant.revoke(RevocationReason::ClientRequest, t(5));
+        uow.grants().update(&grant).await?;
+        uow.commit().await?;
+    }
+    let mut uow = store.begin().await?;
+    ensure_eq!(
+        uow.grants()
+            .find(gid(1))
+            .await?
+            .map(|g| g.to_record().status),
+        Some(GrantStatus::Revoked {
+            revoked_at: t(5),
+            reason: RevocationReason::ClientRequest,
+        }),
+        "grants().find after revoke(ClientRequest)"
+    );
     Ok(())
 }
 

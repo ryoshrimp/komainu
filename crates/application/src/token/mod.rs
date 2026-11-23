@@ -9,8 +9,11 @@ use komainu_domain::{
     TokenEndpointAuthMethod,
 };
 
-pub use error::TokenError;
-pub use request::{AccessTokenInfo, ClientAuthentication, TokenRequest, TokenResponse};
+pub use error::{RevocationError, TokenError};
+pub use request::{
+    AccessTokenInfo, ClientAuthentication, RevocationRequest, TokenRequest, TokenResponse,
+    TokenTypeHint,
+};
 
 use crate::audit::{AuditActor, AuditEvent, AuditKind, AuditOutcome};
 use crate::context::RequestContext;
@@ -21,7 +24,7 @@ use crate::support::{
     AuditEventExt, append_all, audit_event, code_events, grant_events, refresh_events,
     truncate_chars,
 };
-use komainu_domain::ClientType;
+use komainu_domain::{ClientType, TokenHash};
 
 #[derive(Clone)]
 pub struct TokenService {
@@ -101,6 +104,88 @@ impl TokenService {
         append_all(uow.as_mut(), vec![event]).await?;
         uow.commit().await?;
         Ok(response)
+    }
+
+    /// Handles `POST /revoke` (RFC 7009). Revoking either token revokes its whole grant.
+    /// `Ok(())` means revoked, not found, or already revoked.
+    pub async fn revoke(
+        &self,
+        ctx: &RequestContext,
+        auth: ClientAuthentication,
+        request: RevocationRequest,
+    ) -> Result<(), RevocationError> {
+        let deps = &self.deps;
+        if !request.duplicated.is_empty() {
+            return Err(RevocationError::InvalidRequest);
+        }
+        let raw = request.token.ok_or(RevocationError::InvalidRequest)?;
+        let uow = deps.store.begin().await?;
+        let (mut uow, client) = match self.authenticate_client(ctx, uow, &auth).await {
+            Ok(authenticated) => authenticated,
+            Err(TokenError::InvalidClient { basic_attempted }) => {
+                return Err(RevocationError::InvalidClient { basic_attempted });
+            }
+            Err(TokenError::Server(e)) => return Err(RevocationError::Server(e)),
+            Err(_) => {
+                return Err(RevocationError::Server(StoreError::Other(
+                    "unexpected client authentication error".to_owned(),
+                )));
+            }
+        };
+        let Some(token) = parse_token(&raw) else {
+            return Ok(());
+        };
+        let hash = token.hash();
+        let refresh_first = request
+            .token_type_hint
+            .as_deref()
+            .and_then(TokenTypeHint::parse)
+            == Some(TokenTypeHint::RefreshToken);
+        let found = if refresh_first {
+            match find_refresh_token(uow.as_mut(), &hash).await? {
+                Some(found) => Some(found),
+                None => find_access_token(uow.as_mut(), &hash).await?,
+            }
+        } else {
+            match find_access_token(uow.as_mut(), &hash).await? {
+                Some(found) => Some(found),
+                None => find_refresh_token(uow.as_mut(), &hash).await?,
+            }
+        };
+        let Some((token_type, token_client, grant_id)) = found else {
+            return Ok(());
+        };
+        if &token_client != client.id() {
+            let event = audit_event(
+                deps,
+                ctx,
+                AuditKind::TokenRevocationClientMismatch,
+                AuditOutcome::Failure,
+                AuditActor::Client,
+            )
+            .client(client.id())
+            .detail("token_type", token_type)
+            .detail("grant_id", grant_id.as_inner().to_string());
+            append_all(uow.as_mut(), vec![event]).await?;
+            uow.commit().await?;
+            return Err(RevocationError::InvalidGrant);
+        }
+        let mut grant = uow
+            .grants()
+            .find_for_update(grant_id)
+            .await?
+            .ok_or_else(|| {
+                RevocationError::Server(StoreError::Other("grant not found for token".to_owned()))
+            })?;
+        if !grant.is_active() {
+            return Ok(());
+        }
+        grant.revoke(RevocationReason::ClientRequest, deps.clock.now());
+        uow.grants().update(&grant).await?;
+        let events = grant_events(deps, ctx, &mut grant, AuditActor::Client);
+        append_all(uow.as_mut(), events).await?;
+        uow.commit().await?;
+        Ok(())
     }
 
     /// Returns what the token stands for, or `None` for unknown, malformed, expired or
@@ -449,4 +534,29 @@ enum Step {
         grant_id: GrantId,
         reason: RevocationReason,
     },
+}
+
+/// `(token_type, client_id, grant_id)` of a token presented to the revocation endpoint.
+type FoundToken = (&'static str, ClientId, GrantId);
+
+async fn find_refresh_token(
+    uow: &mut dyn UnitOfWork,
+    hash: &TokenHash,
+) -> Result<Option<FoundToken>, StoreError> {
+    Ok(uow
+        .refresh_tokens()
+        .find_for_update(hash)
+        .await?
+        .map(|t| ("refresh_token", t.client_id().clone(), t.grant_id())))
+}
+
+async fn find_access_token(
+    uow: &mut dyn UnitOfWork,
+    hash: &TokenHash,
+) -> Result<Option<FoundToken>, StoreError> {
+    Ok(uow
+        .access_tokens()
+        .find(hash)
+        .await?
+        .map(|t| ("access_token", t.client_id().clone(), t.grant_id())))
 }

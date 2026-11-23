@@ -51,6 +51,7 @@ pub fn router(state: AppState) -> axum::Router;
 | `POST /authorize/decision` | 同意の送信 |
 | `POST /logout` | ログアウト |
 | `POST /token` | トークンエンドポイント（§3.2） |
+| `POST /revoke` | トークン失効エンドポイント（[token-revocation](../token-revocation/README.md)） |
 
 ほかのメソッドは axum の既定どおり `405`。
 

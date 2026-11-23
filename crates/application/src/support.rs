@@ -83,6 +83,7 @@ fn reason_str(reason: RevocationReason) -> &'static str {
         RevocationReason::RefreshTokenReplay => "refresh_token_replay",
         RevocationReason::ClientDisabled => "client_disabled",
         RevocationReason::UserDisabled => "user_disabled",
+        RevocationReason::ClientRequest => "client_request",
     }
 }
 
