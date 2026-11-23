@@ -343,7 +343,7 @@ dependencies = [
 
 [[package]]
 name = "komainu-jose"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "base64",
  "ddd-toolkit",

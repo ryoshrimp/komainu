@@ -9,6 +9,8 @@ a breaking change bumps the minor version.
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-11-24
+
 ### Added
 
 - New crate `komainu-jose`: JWS Compact Serialization, JWK / JWK Set and JWT with RS256 and
@@ -84,6 +86,7 @@ in an axum application.
   (`komainu_testkit::conformance`).
 - `minimal` and `custom_screens` examples in the `komainu` crate.
 
-[Unreleased]: https://github.com/ryoshrimp/komainu/compare/v0.1.0-alpha.2...HEAD
+[Unreleased]: https://github.com/ryoshrimp/komainu/compare/v0.1.0-alpha.3...HEAD
+[0.1.0-alpha.3]: https://github.com/ryoshrimp/komainu/compare/v0.1.0-alpha.2...v0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/ryoshrimp/komainu/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/ryoshrimp/komainu/releases/tag/v0.1.0-alpha.1
