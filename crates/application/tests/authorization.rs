@@ -114,10 +114,7 @@ fn scope_not_allowed_redirects_with_invalid_scope() {
 
 #[test]
 fn missing_state_is_invalid_request_when_required() {
-    let fx = Fixture::with_config(komainu_application::ApplicationConfig {
-        require_state: true,
-        ..config()
-    });
+    let fx = Fixture::with_config(config().with_require_state(true));
     let client = register(&fx, confidential(&ALL_GRANTS));
     let p = AuthorizeParams::from_pairs([
         ("response_type".to_owned(), "code".to_owned()),

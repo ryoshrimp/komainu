@@ -15,7 +15,7 @@ use komainu_domain::{
     AuthorizationRequestId, ClientId, ClientName, ClientType, GrantType, NewPassword, OpaqueToken,
     RedirectUri, ScopeSet, ScopeToken, Secret, TokenEndpointAuthMethod, Username,
 };
-use komainu_testing::TestEnv;
+use komainu_testkit::TestEnv;
 
 pub const REDIRECT: &str = "https://app.example/cb";
 pub const PASSWORD: &str = "correct horse";
@@ -44,13 +44,10 @@ pub fn config() -> ApplicationConfig {
         name: ScopeToken::try_new(name.to_owned()).unwrap(),
         description: description.to_owned(),
     };
-    ApplicationConfig {
-        scopes: vec![
-            scope("read", "Read your data"),
-            scope("write", "Write your data"),
-        ],
-        ..ApplicationConfig::default()
-    }
+    ApplicationConfig::default().with_scopes(vec![
+        scope("read", "Read your data"),
+        scope("write", "Write your data"),
+    ])
 }
 
 pub struct Fixture {

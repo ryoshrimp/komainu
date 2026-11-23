@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Authorize access</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background: #f5f5f5; color: #222; }
+main { max-width: 24rem; margin: 2rem auto; padding: 1.5rem; background: #fff; border: 1px solid #ddd; border-radius: 8px; }
+h1 { font-size: 1.25rem; margin-top: 0; }
+label { display: block; margin-top: 1rem; }
+input[type=text], input[type=password] { box-sizing: border-box; width: 100%; padding: 0.5rem; margin-top: 0.25rem; }
+button { margin-top: 1.5rem; margin-right: 0.5rem; padding: 0.5rem 1rem; }
+.error { color: #b00020; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Example &#60;App&#62; wants to access your account</h1>
+<p>This application is requesting permission to:</p>
+<ul>
+
+<li><strong>read</strong>: Read your data</li>
+
+<li><strong>write</strong>: Write &#38; delete</li>
+
+</ul>
+<form method="post" action="https://auth.example.com/authorize/decision">
+<input type="hidden" name="request_id" value="req-1">
+<input type="hidden" name="csrf_token" value="csrf-1">
+<button type="submit" name="decision" value="approve">Allow</button>
+<button type="submit" name="decision" value="deny">Deny</button>
+</form>
+
+</main>
+</body>
+</html>

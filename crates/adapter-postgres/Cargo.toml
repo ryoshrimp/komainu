@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["oauth2", "postgres", "postgresql", "sqlx", "authorization-server"]
+categories = ["authentication", "database"]
 
 [features]
 # Enables integration tests that start PostgreSQL with testcontainers.
@@ -21,7 +24,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 komainu-adapter-std.workspace = true
-komainu-testing.workspace = true
+komainu-testkit.workspace = true
 testcontainers-modules.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

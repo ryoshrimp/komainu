@@ -1,6 +1,10 @@
-//! In-memory adapters for testing komainu. Not published.
+//! In-memory adapters for testing komainu, and conformance tests for store implementations.
+//!
+//! **Not for production.** [`PlainPasswordHasher`] stores passwords in plain text and
+//! [`SequenceRandom`] produces predictable values; use them only in tests.
 
 mod clock;
+pub mod conformance;
 mod env;
 mod password;
 mod random;

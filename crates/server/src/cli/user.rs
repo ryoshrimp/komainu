@@ -3,8 +3,8 @@
 use std::io::BufRead;
 
 use clap::Subcommand;
-use komainu_application::{AdminService, ListPage};
-use komainu_domain::{NewPassword, Secret, Username};
+use komainu::application::{AdminService, ListPage};
+use komainu::domain::{NewPassword, Secret, Username};
 
 use super::admin_exit;
 use super::output::{self, OutputFormat};

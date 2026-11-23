@@ -5,7 +5,7 @@ use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use komainu_application::MaintenanceService;
+use komainu::application::MaintenanceService;
 use metrics_exporter_prometheus::PrometheusHandle;
 
 #[derive(Clone)]

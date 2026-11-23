@@ -14,7 +14,7 @@ use komainu_domain::{
     ScopeToken, Secret, TokenEndpointAuthMethod, Username,
 };
 use komainu_http::{AppState, HttpConfig};
-use komainu_testing::TestEnv;
+use komainu_testkit::TestEnv;
 use tower::ServiceExt;
 
 pub const REDIRECT: &str = "https://app.example/cb";
@@ -47,13 +47,10 @@ pub fn app_config() -> ApplicationConfig {
         name: ScopeToken::try_new(name.to_owned()).unwrap(),
         description: description.to_owned(),
     };
-    ApplicationConfig {
-        scopes: vec![
-            scope("read", "Read your data"),
-            scope("write", "Write your data"),
-        ],
-        ..ApplicationConfig::default()
-    }
+    ApplicationConfig::default().with_scopes(vec![
+        scope("read", "Read your data"),
+        scope("write", "Write your data"),
+    ])
 }
 
 impl Harness {
@@ -64,17 +61,42 @@ impl Harness {
     pub fn with(cookie_secure: bool, max_body_bytes: usize) -> Self {
         let env = TestEnv::new(app_config());
         let deps = env.deps.clone();
-        let config = HttpConfig {
-            public_base_url: BASE.to_owned(),
-            cookie_secure,
-            max_body_bytes,
-            csrf_cookie_ttl: deps.config.authorization_request_ttl,
-        };
-        let state = AppState {
-            authorization: AuthorizationService::new(deps.clone()),
-            token: TokenService::new(deps.clone()),
-            config: std::sync::Arc::new(config),
-        };
+        let config = HttpConfig::new(BASE)
+            .unwrap()
+            .with_cookie_secure(cookie_secure)
+            .with_max_body_bytes(max_body_bytes)
+            .with_csrf_cookie_ttl(deps.config.authorization_request_ttl);
+        Self::from_config(env, config)
+    }
+
+    pub fn from_config(env: TestEnv, config: HttpConfig) -> Self {
+        let deps = env.deps.clone();
+        let state = AppState::new(
+            AuthorizationService::new(deps.clone()),
+            TokenService::new(deps.clone()),
+            config,
+        );
+        Self {
+            admin: AdminService::new(deps),
+            router: komainu_http::router(state),
+            env,
+        }
+    }
+
+    /// The default configuration with a custom renderer.
+    pub fn with_screens(screens: std::sync::Arc<dyn komainu_http::ScreenRenderer>) -> Self {
+        let env = TestEnv::new(app_config());
+        let deps = env.deps.clone();
+        let config = HttpConfig::new(BASE)
+            .unwrap()
+            .with_cookie_secure(false)
+            .with_csrf_cookie_ttl(deps.config.authorization_request_ttl);
+        let state = AppState::new(
+            AuthorizationService::new(deps.clone()),
+            TokenService::new(deps.clone()),
+            config,
+        )
+        .with_screens(screens);
         Self {
             admin: AdminService::new(deps),
             router: komainu_http::router(state),

@@ -7,7 +7,7 @@ mod user;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use komainu_application::{AdminError, AdminService};
+use komainu::application::{AdminError, AdminService};
 
 use crate::Exit;
 

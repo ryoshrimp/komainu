@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords = ["oauth2", "oauth", "authorization-server", "postgres", "pkce"]
+categories = ["authentication", "web-programming::http-server"]
 
 [[bin]]
 name = "komainu"
@@ -15,11 +18,7 @@ path = "src/main.rs"
 pg-tests = []
 
 [dependencies]
-komainu-domain.workspace = true
-komainu-application.workspace = true
-komainu-adapter-postgres.workspace = true
-komainu-adapter-std.workspace = true
-komainu-http.workspace = true
+komainu.workspace = true
 tokio = { workspace = true, features = ["full"] }
 axum.workspace = true
 clap.workspace = true
@@ -30,7 +29,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
-url.workspace = true
 time = { workspace = true, features = ["formatting"] }
 anyhow.workspace = true
 
@@ -38,9 +36,10 @@ anyhow.workspace = true
 figment = { workspace = true, features = ["test"] }
 assert_cmd.workspace = true
 predicates.workspace = true
+url.workspace = true
 reqwest.workspace = true
 testcontainers-modules.workspace = true
-komainu-testing.workspace = true
+komainu-testkit.workspace = true
 sqlx.workspace = true
 
 [lints]

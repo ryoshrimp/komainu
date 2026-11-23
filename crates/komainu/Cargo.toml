@@ -1,0 +1,44 @@
+[package]
+name = "komainu"
+description = "An embeddable OAuth 2.0 authorization server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["oauth2", "oauth", "authorization-server", "axum", "pkce"]
+categories = ["authentication", "web-programming::http-server"]
+
+[features]
+default = ["http", "postgres", "std"]
+http = ["dep:komainu-http", "dep:axum"]
+postgres = ["dep:komainu-adapter-postgres"]
+std = ["dep:komainu-adapter-std"]
+
+[dependencies]
+komainu-domain.workspace = true
+komainu-application.workspace = true
+komainu-http = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+komainu-adapter-postgres = { workspace = true, optional = true }
+komainu-adapter-std = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[[example]]
+name = "minimal"
+required-features = ["http", "postgres", "std"]
+
+[[example]]
+name = "custom_screens"
+required-features = ["http", "std"]
+
+[dev-dependencies]
+komainu-testkit.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+tower.workspace = true
+http-body-util.workspace = true
+time.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

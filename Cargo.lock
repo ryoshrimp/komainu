@@ -1804,13 +1804,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "komainu"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http-body-util",
+ "komainu-adapter-postgres",
+ "komainu-adapter-std",
+ "komainu-application",
+ "komainu-domain",
+ "komainu-http",
+ "komainu-testkit",
+ "serde_json",
+ "thiserror",
+ "time",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "komainu-adapter-postgres"
 version = "0.1.0"
 dependencies = [
  "komainu-adapter-std",
  "komainu-application",
  "komainu-domain",
- "komainu-testing",
+ "komainu-testkit",
  "serde_json",
  "sqlx",
  "testcontainers-modules",
@@ -1838,7 +1857,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "komainu-domain",
- "komainu-testing",
+ "komainu-testkit",
  "thiserror",
  "time",
  "uuid",
@@ -1868,11 +1887,12 @@ dependencies = [
  "http-body-util",
  "komainu-application",
  "komainu-domain",
- "komainu-testing",
+ "komainu-testkit",
  "metrics",
  "serde",
  "serde_json",
  "subtle",
+ "thiserror",
  "time",
  "tokio",
  "tower",
@@ -1891,12 +1911,8 @@ dependencies = [
  "axum",
  "clap",
  "figment",
- "komainu-adapter-postgres",
- "komainu-adapter-std",
- "komainu-application",
- "komainu-domain",
- "komainu-http",
- "komainu-testing",
+ "komainu",
+ "komainu-testkit",
  "metrics",
  "metrics-exporter-prometheus",
  "predicates",
@@ -1913,12 +1929,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "komainu-testing"
+name = "komainu-testkit"
 version = "0.1.0"
 dependencies = [
  "komainu-application",
  "komainu-domain",
  "time",
+ "tokio",
  "uuid",
 ]
 

@@ -1,0 +1,23 @@
+[package]
+name = "komainu-testkit"
+description = "In-memory adapters and store conformance tests for komainu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["oauth2", "testing", "in-memory", "conformance", "authorization-server"]
+categories = ["authentication", "development-tools::testing"]
+
+[dependencies]
+komainu-application.workspace = true
+komainu-domain.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["macros"] }
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true
