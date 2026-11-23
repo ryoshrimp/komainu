@@ -48,7 +48,8 @@ async fn client_credentials_with_basic_succeeds() {
     );
     assert_eq!(reply.header("cache-control"), Some("no-store"));
     assert_eq!(reply.header("pragma"), Some("no-cache"));
-    assert!(reply.body.contains("\"access_token\":\""));
+    let json: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_token_field_is_b64token(&json, "access_token");
     assert!(reply.body.contains("\"token_type\":\"Bearer\""));
     assert!(reply.body.contains("\"expires_in\":3600"));
     assert!(reply.body.contains("\"scope\":\"read\""));
@@ -133,13 +134,10 @@ async fn non_form_content_type_is_invalid_request() {
     assert_eq!(reply.header("cache-control"), Some("no-store"));
 }
 
-#[tokio::test]
-async fn reused_authorization_code_is_invalid_grant() {
-    let h = Harness::new();
+/// Runs authorize -> login -> decision and returns the issued authorization code.
+/// Creates user alice; call once per Harness.
+async fn obtain_code(h: &Harness, c: &Registered) -> String {
     h.create_user("alice").await;
-    let c = h
-        .register(confidential(&[GrantType::AuthorizationCode]))
-        .await;
     let started = h.send(get(&authorize_uri(&c.id(), ""), "")).await;
     let rid = query_param(started.location(), "request_id").unwrap();
     let csrf = started.cookie_value("komainu_csrf").unwrap();
@@ -159,16 +157,68 @@ async fn reused_authorization_code_is_invalid_grant() {
             &format!("request_id={rid}&csrf_token={csrf}&decision=approve"),
         ))
         .await;
-    let code = query_param(decision.location(), "code").unwrap();
-    let body = format!(
-        "grant_type=authorization_code&code={code}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb"
-    );
+    query_param(decision.location(), "code").unwrap()
+}
+
+fn code_exchange_body(code: &str) -> String {
+    format!("grant_type=authorization_code&code={code}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb")
+}
+
+#[tokio::test]
+async fn reused_authorization_code_is_invalid_grant() {
+    let h = Harness::new();
+    let c = h
+        .register(confidential(&[GrantType::AuthorizationCode]))
+        .await;
+    let code = obtain_code(&h, &c).await;
+    let body = code_exchange_body(&code);
     let auth = basic(&c.id(), &c.secret());
     let first = h.send(token_request(Some(&auth), &body)).await;
     assert_eq!(first.status, StatusCode::OK);
     let second = h.send(token_request(Some(&auth), &body)).await;
     assert_eq!(second.status, StatusCode::BAD_REQUEST);
     assert!(second.body.contains("\"error\":\"invalid_grant\""));
+}
+
+/// Mirrors `is_b64token` in `crates/application/src/ids.rs`; keep the two in sync.
+/// RFC 6750 §2.1: `b64token = 1*( ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" / "/" ) *"="`
+fn is_b64token(s: &str) -> bool {
+    let body = s.trim_end_matches('=');
+    !body.is_empty()
+        && body
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-._~+/".contains(&b))
+}
+
+fn assert_token_field_is_b64token(json: &serde_json::Value, field: &str) {
+    let token = json[field]
+        .as_str()
+        .unwrap_or_else(|| panic!("{field} missing in {json}"));
+    assert!(is_b64token(token), "{field} is not a b64token: {token}");
+}
+
+#[tokio::test]
+async fn authorization_code_tokens_are_bearer_b64tokens() {
+    let h = Harness::new();
+    let c = h
+        .register(confidential(&[
+            GrantType::AuthorizationCode,
+            GrantType::RefreshToken,
+        ]))
+        .await;
+    let code = obtain_code(&h, &c).await;
+    let reply = h
+        .send(token_request(
+            Some(&basic(&c.id(), &c.secret())),
+            &code_exchange_body(&code),
+        ))
+        .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.header("cache-control"), Some("no-store"));
+    let json: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(json["token_type"], "Bearer");
+    assert_token_field_is_b64token(&json, "access_token");
+    assert_token_field_is_b64token(&json, "refresh_token");
 }
 
 #[tokio::test]
