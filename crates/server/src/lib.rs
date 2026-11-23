@@ -12,7 +12,7 @@ pub mod wiring;
 use std::fmt::Display;
 
 use clap::Parser;
-use komainu_adapter_postgres::{PgUnitOfWorkFactory, connect};
+use komainu::adapter_postgres::{PgUnitOfWorkFactory, connect};
 
 use crate::cli::{AdminCommand, Cli, Command};
 use crate::wiring::Settings;
@@ -102,5 +102,5 @@ async fn admin(settings: Settings, command: AdminCommand) -> Result<(), Exit> {
         settings.http,
     )
     .map_err(Exit::runtime)?;
-    cli::run_admin(&services.admin, command).await
+    cli::run_admin(services.komainu.admin(), command).await
 }

@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 
-use komainu_adapter_postgres::{PgUnitOfWorkFactory, connect, migrate};
+use komainu::adapter_postgres::{PgUnitOfWorkFactory, connect, migrate};
 use metrics_exporter_prometheus::PrometheusHandle;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
@@ -58,7 +58,9 @@ pub(crate) async fn run_serve(
 
     let (stop_tx, stop_rx) = watch::channel(false);
     let mut tasks = JoinSet::new();
-    let app = komainu_http::router(services.app_state)
+    let app = services
+        .komainu
+        .router()
         .into_make_service_with_connect_info::<SocketAddr>();
     let stop = stopped(stop_rx.clone());
     tasks.spawn(async move {
@@ -66,7 +68,7 @@ pub(crate) async fn run_serve(
             .with_graceful_shutdown(stop)
             .await
     });
-    let ops_app = ops::router(services.maintenance.clone(), metrics);
+    let ops_app = ops::router(services.komainu.maintenance().clone(), metrics);
     let stop = stopped(stop_rx.clone());
     tasks.spawn(async move {
         axum::serve(ops_listener, ops_app)
@@ -76,7 +78,7 @@ pub(crate) async fn run_serve(
     if cleanup_config.enabled {
         let interval = std::time::Duration::from_secs(cleanup_config.interval_secs);
         let stop = stopped(stop_rx.clone());
-        let maintenance = services.maintenance;
+        let maintenance = services.komainu.maintenance().clone();
         tasks.spawn(async move {
             cleanup::run_periodic(maintenance, interval, stop).await;
             Ok(())

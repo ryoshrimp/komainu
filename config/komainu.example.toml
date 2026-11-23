@@ -6,6 +6,7 @@
 listen = "0.0.0.0:8080"
 public_base_url = "https://auth.example.com"  # required
 allow_insecure_http = false                   # true allows http:// in public_base_url (local dev only)
+# content_security_policy = "default-src 'none'; style-src 'unsafe-inline'"  # optional; frame-ancestors is always 'none'
 shutdown_timeout_secs = 30
 
 [ops]

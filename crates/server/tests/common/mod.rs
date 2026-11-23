@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::process::Output;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use komainu_adapter_postgres::{PgStoreConfig, connect, migrate};
-use komainu_domain::Secret;
+use komainu::adapter_postgres::{PgStoreConfig, connect, migrate};
+use komainu::domain::Secret;
 use sqlx::PgPool;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;

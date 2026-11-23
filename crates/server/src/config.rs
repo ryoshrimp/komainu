@@ -7,7 +7,8 @@ use std::path::Path;
 
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
-use komainu_domain::{ScopeToken, Secret};
+use komainu::domain::{ScopeToken, Secret};
+use komainu::http::{ContentSecurityPolicy, HttpConfig, HttpConfigError};
 use serde::Deserialize;
 
 /// Defaults of every item that has one. `server.public_base_url` and `database.url` have
@@ -89,6 +90,9 @@ pub struct ServerConfig {
     pub listen: SocketAddr,
     pub public_base_url: String,
     pub allow_insecure_http: bool,
+    /// Optional `Content-Security-Policy` of the HTML screens; `frame-ancestors` is added.
+    #[serde(default)]
+    pub content_security_policy: Option<String>,
     pub shutdown_timeout_secs: u64,
 }
 
@@ -187,35 +191,38 @@ pub fn validate_log_filter(log: &LogConfig) -> Result<(), ConfigError> {
 /// Returns the first error found.
 pub fn validate(config: &mut Config) -> Result<(), ConfigError> {
     let server = &mut config.server;
-    let url = url::Url::parse(&server.public_base_url).map_err(|e| {
-        invalid(format!(
-            "server.public_base_url is not an absolute URL: {e}"
-        ))
-    })?;
-    if url.query().is_some() || url.fragment().is_some() {
-        return Err(invalid(
-            "server.public_base_url must not have a query or a fragment",
-        ));
-    }
-    match url.scheme() {
-        "https" => {}
-        "http" if server.allow_insecure_http => {}
-        "http" => {
-            return Err(invalid(
+    let checked = if server.allow_insecure_http {
+        HttpConfig::new_insecure(&server.public_base_url)
+    } else {
+        HttpConfig::new(&server.public_base_url)
+    };
+    if let Err(error) = checked {
+        return Err(match error {
+            HttpConfigError::NotAbsolute(e) => invalid(format!(
+                "server.public_base_url is not an absolute URL: {e}"
+            )),
+            HttpConfigError::QueryOrFragment => {
+                invalid("server.public_base_url must not have a query or a fragment")
+            }
+            HttpConfigError::InsecureScheme => invalid(
                 "server.public_base_url must use https (set server.allow_insecure_http = true for local development)",
-            ));
-        }
-        other => {
-            return Err(invalid(format!(
+            ),
+            HttpConfigError::UnsupportedScheme(other) => invalid(format!(
                 "server.public_base_url has an unsupported scheme: {other}"
-            )));
-        }
-    }
-    if !url.has_host() {
-        return Err(invalid("server.public_base_url must have a host"));
+            )),
+            HttpConfigError::MissingHost => invalid("server.public_base_url must have a host"),
+            // Unreachable today: `HttpConfigError` is `#[non_exhaustive]`, so the compiler
+            // requires a wildcard arm for variants added later.
+            other => invalid(format!("server.public_base_url: {other}")),
+        });
     }
     let trimmed_len = server.public_base_url.trim_end_matches('/').len();
     server.public_base_url.truncate(trimmed_len);
+    if let Some(policy) = &server.content_security_policy
+        && let Err(error) = ContentSecurityPolicy::custom(policy)
+    {
+        return Err(invalid(format!("server.content_security_policy: {error}")));
+    }
 
     let positive = [
         ("server.shutdown_timeout_secs", server.shutdown_timeout_secs),
@@ -380,6 +387,27 @@ mod tests {
             let file = file.replace("allow_insecure_http = false", "allow_insecure_http = true");
             jail.create_file("komainu.toml", &file)?;
             load_validated(jail).expect("http is allowed with the opt-in");
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn content_security_policy_is_validated() {
+        Jail::expect_with(|jail| {
+            let file = EXAMPLE.replace(
+                "allow_insecure_http = false",
+                "allow_insecure_http = false\ncontent_security_policy = \"default-src 'none'; frame-ancestors *\"",
+            );
+            jail.create_file("komainu.toml", &file)?;
+            let error = load_validated(jail).expect_err("rejected").to_string();
+            assert!(error.contains("server.content_security_policy"), "{error}");
+
+            let file = EXAMPLE.replace(
+                "allow_insecure_http = false",
+                "allow_insecure_http = false\ncontent_security_policy = \"default-src 'none'\"",
+            );
+            jail.create_file("komainu.toml", &file)?;
+            load_validated(jail).expect("valid");
             Ok(())
         });
     }

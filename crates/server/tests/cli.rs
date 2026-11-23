@@ -3,9 +3,9 @@
 
 mod common;
 
-use komainu_adapter_postgres::PgUnitOfWorkFactory;
-use komainu_application::{ClientAuthentication, TokenRequest};
-use komainu_domain::Secret;
+use komainu::adapter_postgres::PgUnitOfWorkFactory;
+use komainu::application::{ClientAuthentication, TokenRequest};
+use komainu::domain::Secret;
 use komainu_server::{config, wiring};
 use std::path::PathBuf;
 
@@ -90,8 +90,8 @@ async fn cli_client_create_prints_credentials_that_work_and_audits() {
     assert!(lines[1].starts_with("client_secret: "), "{out}");
     let token = env
         .services()
-        .app_state
-        .token
+        .komainu
+        .token()
         .exchange(
             &wiring::background_context(),
             ClientAuthentication::Basic {
@@ -168,8 +168,8 @@ async fn cli_client_disable_invalidates_issued_access_tokens() {
     let secret = field(&out, "client_secret").to_owned();
     let services = env.services();
     let token = services
-        .app_state
-        .token
+        .komainu
+        .token()
         .exchange(
             &wiring::background_context(),
             ClientAuthentication::Basic {
@@ -187,8 +187,8 @@ async fn cli_client_disable_invalidates_issued_access_tokens() {
     let access = token.access_token.expose().to_owned();
     assert!(
         services
-            .app_state
-            .token
+            .komainu
+            .token()
             .verify_access_token(&access)
             .await
             .unwrap()
@@ -197,8 +197,8 @@ async fn cli_client_disable_invalidates_issued_access_tokens() {
     assert_eq!(env.run(&["client", "disable", &id]).status.code(), Some(0));
     assert!(
         services
-            .app_state
-            .token
+            .komainu
+            .token()
             .verify_access_token(&access)
             .await
             .unwrap()

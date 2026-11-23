@@ -11,7 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use komainu_adapter_postgres::PgUnitOfWorkFactory;
+use komainu::adapter_postgres::PgUnitOfWorkFactory;
 use komainu_server::{config, wiring};
 use reqwest::header::{CACHE_CONTROL, LOCATION, PRAGMA, SET_COOKIE, WWW_AUTHENTICATE};
 use reqwest::{Client, Response, StatusCode, redirect::Policy};
@@ -373,7 +373,7 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
     )
     .unwrap();
     let verify = |token: String| {
-        let token_service = services.app_state.token.clone();
+        let token_service = services.komainu.token().clone();
         async move { token_service.verify_access_token(&token).await.unwrap() }
     };
 

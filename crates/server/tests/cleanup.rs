@@ -3,7 +3,7 @@
 
 mod common;
 
-use komainu_adapter_postgres::PgUnitOfWorkFactory;
+use komainu::adapter_postgres::PgUnitOfWorkFactory;
 use komainu_server::{cleanup, config, wiring};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -60,7 +60,7 @@ async fn cleanup_run_once_deletes_only_tokens_past_the_grace_period() {
         .expect("access token");
     }
 
-    let report = cleanup::run_once(&services.maintenance)
+    let report = cleanup::run_once(services.komainu.maintenance())
         .await
         .expect("purge");
     assert_eq!(report.counts.access_tokens, 1);

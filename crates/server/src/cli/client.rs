@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use clap::{Args, Subcommand};
-use komainu_application::{AdminService, ListPage, RegisterClient};
-use komainu_domain::{
+use komainu::application::{AdminService, ListPage, RegisterClient};
+use komainu::domain::{
     ClientId, ClientName, ClientType, ClientUpdate, GrantType, RedirectUri, ScopeSet,
     TokenEndpointAuthMethod,
 };
@@ -105,7 +105,7 @@ pub struct UpdateArgs {
     output: OutputFormat,
 }
 
-fn parse<T: std::str::FromStr<Err = komainu_domain::DomainError>>(value: &str) -> Result<T, Exit> {
+fn parse<T: std::str::FromStr<Err = komainu::domain::DomainError>>(value: &str) -> Result<T, Exit> {
     value.parse().map_err(Exit::usage)
 }
 

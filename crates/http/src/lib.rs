@@ -8,11 +8,13 @@ mod authorize;
 mod client_auth;
 mod consent;
 mod cookies;
+mod csp;
 mod form;
 mod login;
 mod metrics;
 mod middleware;
 mod oauth_error;
+mod screens;
 mod security_headers;
 mod state;
 mod token;
@@ -22,14 +24,20 @@ use axum::routing::{get, post};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
-pub use state::{AppState, HttpConfig};
+pub use csp::{ContentSecurityPolicy, CspError};
+pub use screens::{
+    ConsentScreen, DefaultScreens, ErrorKind, ErrorScreen, FormTarget, LoggedOutScreen,
+    LoginErrorKind, LoginScreen, RenderError, ScreenRenderer, ScreenRequest, form_fields,
+};
+pub use state::{AppState, HttpConfig, HttpConfigError};
 
 /// All endpoints plus the middleware stack.
 ///
 /// Mount at "/". The base path is part of `public_base_url` only for `Location` headers;
 /// embedders using a prefix should nest this router under the same prefix.
 pub fn router(state: AppState) -> Router {
-    let max_body_bytes = state.config.max_body_bytes;
+    let max_body_bytes = state.config.max_body_bytes();
+    let config = state.config.clone();
     Router::new()
         .route(
             "/authorize",
@@ -42,7 +50,8 @@ pub fn router(state: AppState) -> Router {
         .route("/token", post(token::token))
         .with_state(state)
         // Layers run from the last one added (outermost) to the first (innermost).
-        .layer(axum::middleware::from_fn(
+        .layer(axum::middleware::from_fn_with_state(
+            config,
             security_headers::add_security_headers,
         ))
         .layer(RequestBodyLimitLayer::new(max_body_bytes))

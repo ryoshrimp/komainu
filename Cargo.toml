@@ -5,8 +5,9 @@ members = [
     "crates/application",
     "crates/adapter-postgres",
     "crates/adapter-std",
-    "crates/testing",
+    "crates/testkit",
     "crates/http",
+    "crates/komainu",
     "crates/server",
 ]
 
@@ -18,12 +19,13 @@ repository = "https://github.com/ryoshrimp/komainu"
 
 [workspace.dependencies]
 # Internal crates
-komainu-domain = { path = "crates/domain" }
-komainu-application = { path = "crates/application" }
-komainu-adapter-postgres = { path = "crates/adapter-postgres" }
-komainu-adapter-std = { path = "crates/adapter-std" }
-komainu-testing = { path = "crates/testing" }
-komainu-http = { path = "crates/http" }
+komainu-domain = { path = "crates/domain", version = "0.1.0" }
+komainu-application = { path = "crates/application", version = "0.1.0" }
+komainu-adapter-postgres = { path = "crates/adapter-postgres", version = "0.1.0" }
+komainu-adapter-std = { path = "crates/adapter-std", version = "0.1.0" }
+komainu-testkit = { path = "crates/testkit", version = "0.1.0" }
+komainu-http = { path = "crates/http", version = "0.1.0" }
+komainu = { path = "crates/komainu", version = "0.1.0" }
 
 # DDD building blocks (only komainu-domain depends on it)
 ddd-toolkit = { version = "0.5", default-features = false }

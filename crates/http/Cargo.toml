@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["oauth2", "axum", "authorization-server", "oauth", "authentication"]
+categories = ["authentication", "web-programming::http-server"]
 
 [dependencies]
 komainu-application.workspace = true
@@ -23,9 +26,10 @@ uuid = { workspace = true, features = ["v7"] }
 tracing.workspace = true
 metrics.workspace = true
 subtle.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-komainu-testing.workspace = true
+komainu-testkit.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 http-body-util.workspace = true
 

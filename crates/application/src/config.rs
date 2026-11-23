@@ -11,7 +11,11 @@ pub struct ScopeDefinition {
 }
 
 /// Settings of the use cases.
+///
+/// Start from [`Default`] and adjust with the `with_*` methods; the struct is
+/// `#[non_exhaustive]`, so it cannot be built with a struct expression outside this crate.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ApplicationConfig {
     pub authorization_code_ttl: Duration,
     pub access_token_ttl: Duration,
@@ -25,6 +29,78 @@ pub struct ApplicationConfig {
     /// Expired rows are deleted this long after expiry (F-13).
     pub purge_grace: Duration,
     pub audit_retention: Duration,
+}
+
+impl ApplicationConfig {
+    /// Sets `authorization_code_ttl`.
+    #[must_use]
+    pub fn with_authorization_code_ttl(mut self, value: Duration) -> Self {
+        self.authorization_code_ttl = value;
+        self
+    }
+
+    /// Sets `access_token_ttl`.
+    #[must_use]
+    pub fn with_access_token_ttl(mut self, value: Duration) -> Self {
+        self.access_token_ttl = value;
+        self
+    }
+
+    /// Sets `refresh_token_ttl`.
+    #[must_use]
+    pub fn with_refresh_token_ttl(mut self, value: Duration) -> Self {
+        self.refresh_token_ttl = value;
+        self
+    }
+
+    /// Sets `authorization_request_ttl`.
+    #[must_use]
+    pub fn with_authorization_request_ttl(mut self, value: Duration) -> Self {
+        self.authorization_request_ttl = value;
+        self
+    }
+
+    /// Sets `login_session_ttl`.
+    #[must_use]
+    pub fn with_login_session_ttl(mut self, value: Duration) -> Self {
+        self.login_session_ttl = value;
+        self
+    }
+
+    /// Sets `require_state`.
+    #[must_use]
+    pub fn with_require_state(mut self, value: bool) -> Self {
+        self.require_state = value;
+        self
+    }
+
+    /// Sets `allow_public_clients`.
+    #[must_use]
+    pub fn with_allow_public_clients(mut self, value: bool) -> Self {
+        self.allow_public_clients = value;
+        self
+    }
+
+    /// Sets `scopes`.
+    #[must_use]
+    pub fn with_scopes(mut self, value: Vec<ScopeDefinition>) -> Self {
+        self.scopes = value;
+        self
+    }
+
+    /// Sets `purge_grace`.
+    #[must_use]
+    pub fn with_purge_grace(mut self, value: Duration) -> Self {
+        self.purge_grace = value;
+        self
+    }
+
+    /// Sets `audit_retention`.
+    #[must_use]
+    pub fn with_audit_retention(mut self, value: Duration) -> Self {
+        self.audit_retention = value;
+        self
+    }
 }
 
 impl Default for ApplicationConfig {

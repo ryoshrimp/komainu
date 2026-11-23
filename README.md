@@ -33,8 +33,9 @@ are stored with Argon2id, and none of these values is written to the logs.
 
 Not supported (yet): PKCE, OpenID Connect, JWT access tokens, token introspection and revocation
 endpoints, dynamic client registration, the implicit and password grants, external identity
-providers, rate limiting of logins, TLS termination (use a reverse proxy), custom or translated
-screens (the screens are English only), and a REST/UI for administration.
+providers, rate limiting of logins, TLS termination (use a reverse proxy), translations of the built-in
+screens (they are English only; see [Embedding](#embedding-as-a-library) to replace them), and a
+REST/UI for administration.
 
 ## Quick start
 
@@ -87,7 +88,7 @@ Environment variables override the file: `KOMAINU_<SECTION>__<KEY>`, for example
 
 | Section | Items |
 |---|---|
-| `[server]` | `listen`, `public_base_url` (required), `allow_insecure_http`, `shutdown_timeout_secs` |
+| `[server]` | `listen`, `public_base_url` (required), `allow_insecure_http`, `content_security_policy`, `shutdown_timeout_secs` |
 | `[ops]` | `listen` for `/healthz`, `/readyz` and `/metrics` |
 | `[database]` | `url` (required), `max_connections`, `acquire_timeout_secs` |
 | `[session]` | `cookie_secure`, `ttl_secs` |
@@ -100,6 +101,10 @@ Environment variables override the file: `KOMAINU_<SECTION>__<KEY>`, for example
 `public_base_url` must be `https` unless `server.allow_insecure_http = true`. Run komainu behind a
 reverse proxy that terminates TLS. The ops listener has no authentication; keep it on a private
 address.
+
+`server.content_security_policy` sets the `Content-Security-Policy` of the HTML screens (the
+default allows only inline styles). `frame-ancestors 'none'` is always added, so a value that
+contains `frame-ancestors` is rejected.
 
 ## Command line
 
@@ -120,10 +125,28 @@ Run `komainu --help` or `komainu client create --help` for all options. Exit cod
 1 runtime error, 2 usage or configuration error, 3 not found, 4 already exists. Disabling a client
 makes every access token it received invalid.
 
+## Embedding as a library
+
+The `komainu` crate re-exports the library crates behind features and assembles them with
+`Komainu::builder()`: you give it a store, optionally your own authenticator
+(`ResourceOwnerAuthenticator`) and your own screens (`ScreenRenderer`), and get the use case
+services and an axum `Router` to merge into your app. A screen renderer only returns the HTML;
+komainu keeps the status codes, headers, cookies and CSRF checks. Examples:
+
+```sh
+cargo run -p komainu --example minimal          # PostgreSQL (DATABASE_URL) and the default screens
+cargo run -p komainu --example custom_screens   # in-memory store and a Japanese login screen
+```
+
+The `komainu-testkit` crate has in-memory adapters and a conformance suite
+(`komainu_testkit::conformance`) to check your own store implementation.
+
 ## Crates
 
 | Crate | Role |
 |---|---|
+| `komainu` | facade: re-exports and `Komainu::builder()` |
+| `komainu-testkit` | in-memory adapters and store conformance tests |
 | `komainu-domain` | aggregates, value objects, domain events |
 | `komainu-application` | use cases and the ports (traits) they need |
 | `komainu-adapter-postgres` | PostgreSQL implementation of the ports, with migrations |

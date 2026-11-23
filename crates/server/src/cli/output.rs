@@ -1,8 +1,8 @@
 //! Rendering of views as text or JSON.
 
 use clap::ValueEnum;
-use komainu_application::{ClientView, UserView};
-use komainu_domain::OpaqueToken;
+use komainu::application::{ClientView, UserView};
+use komainu::domain::OpaqueToken;
 use serde::Serialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;

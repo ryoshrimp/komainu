@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use komainu_application::{MaintenanceService, PurgeReport, StoreError};
+use komainu::application::{MaintenanceService, PurgeReport, StoreError};
 use metrics::counter;
 
 use crate::wiring::background_context;

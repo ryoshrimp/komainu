@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["oauth2", "oauth", "authorization-server", "pkce", "authentication"]
+categories = ["authentication"]
 
 [dependencies]
 komainu-domain.workspace = true
@@ -14,7 +17,9 @@ base64.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-komainu-testing.workspace = true
+# Path only: dev-dependencies without a version are dropped when packaging, which breaks the
+# application <-> testkit cycle.
+komainu-testkit = { path = "../testkit" }
 
 [lints]
 workspace = true

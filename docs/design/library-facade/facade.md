@@ -45,6 +45,8 @@ komainu-testkit.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
 tower.workspace = true
 http-body-util.workspace = true
+time.workspace = true        # FixedClock と ApplicationConfig の TTL に OffsetDateTime / Duration が要り、komainu は time を再エクスポートしないため
+serde_json.workspace = true  # トークン応答の JSON を読むため
 ```
 
 ルートの `Cargo.toml` の `members` と `[workspace.dependencies]` に `crates/komainu` を足す。

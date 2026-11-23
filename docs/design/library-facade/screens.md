@@ -71,7 +71,7 @@ pub struct ConsentScreen<'a> {
     pub client_name: &'a str,
     pub scopes: &'a [komainu_application::ScopeView],
 }
-// DefaultScreens は scopes.to_vec() して今の ConsentPage（Vec<ScopeView> を持つ）に渡す。
+// DefaultScreens の内部テンプレート構造体 ConsentPage は &[ScopeView] を借りて持つ（複製しない）。
 
 #[non_exhaustive]
 pub struct ErrorScreen<'a> {
@@ -351,7 +351,7 @@ fn render(state: &AppState, status: StatusCode, f: impl FnOnce(&dyn ScreenRender
 ## 実装メモ
 
 - `HttpConfigError`・`CspError` のために `crates/http/Cargo.toml` に `thiserror.workspace = true` を足す。
-- 置き換える箇所は HTML を返すすべての箇所: `crates/http/src/authorize.rs` の `html`・`error_page`・`bad_request`・`authorize_failure`（store エラーの 500）・`outcome_response`・resume ハンドラの `bad_request`、`crates/http/src/login.rs` の `login_get`・`login_post` の store エラー（`TEMPORARILY_UNAVAILABLE` の 500）・`invalid_credentials_page`・`logout`、`crates/http/src/consent.rs`。置き換えのあと、内部関数 `html` と `error_page`、定数 `TEMPORARILY_UNAVAILABLE` は削除し、文言は `ErrorKind::default_message` に移す。`grep -rn "TEMPORARILY_UNAVAILABLE\|fn html\|html(\|error_page" crates/http/src` が 0 件になること。例外として、`redirect(location)` が `HeaderValue` を作れなかったときの 500 は renderer を通さず、renderer 失敗時と同じ text/plain の固定応答（`Internal Server Error`）にする（`redirect` は `AppState` もヘッダも受け取らず、`ScreenRequest` を作れないため。Location は検証済みの URL から作るので、実際にはほぼ起きない）。`redirect` のシグネチャは変えない。
+- 置き換える箇所は HTML を返すすべての箇所: `crates/http/src/authorize.rs` の `html`・`error_page`・`bad_request`・`authorize_failure`（store エラーの 500）・`outcome_response`・resume ハンドラの `bad_request`、`crates/http/src/login.rs` の `login_get`・`login_post` の store エラー（`TEMPORARILY_UNAVAILABLE` の 500）・`invalid_credentials_page`・`logout`、`crates/http/src/consent.rs`。置き換えのあと、内部関数 `html` と `error_page`、定数 `TEMPORARILY_UNAVAILABLE` は削除し、文言は `ErrorKind::default_message` に移す。`grep -rn "TEMPORARILY_UNAVAILABLE\|fn html\|html(\|fn error_page\|error_page(" crates/http/src` が 0 件になること。メトリクスのラベル `"error_page"` は `docs/design/authorization-server/http.md:202` で公開している値なので残す（関数名だけを対象にする）。例外として、`redirect(location)` が `HeaderValue` を作れなかったときの 500 は renderer を通さず、renderer 失敗時と同じ text/plain の固定応答（`Internal Server Error`）にする（`redirect` は `AppState` もヘッダも受け取らず、`ScreenRequest` を作れないため。Location は検証済みの URL から作るので、実際にはほぼ起きない）。`redirect` のシグネチャは変えない。
 - `ErrorPage` テンプレートには、`DefaultScreens::error` の中で `screen.kind.default_message()` を渡す。
 - `ScreenRequest` を作るために、`bad_request` などのヘルパーは `&AppState` と `&HeaderMap`、`Ctx` を受ける必要がある。引数をまとめた内部構造体（例: `ScreenCtx<'a> { state, headers, request_id }`）を作ってよい。
 - 既定画面のスナップショットは crate 内の単体テスト（`crates/http/src/screens.rs` の `#[cfg(test)]`。コンテキストは `#[non_exhaustive]` なので crate 外では作れない）で比べる。
