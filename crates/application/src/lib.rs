@@ -9,6 +9,7 @@ pub mod admin;
 pub mod audit;
 pub mod authentication;
 pub mod authorization;
+pub mod capabilities;
 pub mod config;
 pub mod context;
 pub mod deps;
@@ -26,6 +27,7 @@ pub use authorization::{
     ConsentPrompt, LoggedIn, LoginError, LoginFormView, NonRedirectableError, ScopeView,
     StartResult,
 };
+pub use capabilities::{ResponseMode, ResponseType, ServerCapabilities};
 pub use config::{ApplicationConfig, ScopeDefinition};
 pub use context::RequestContext;
 pub use deps::Dependencies;

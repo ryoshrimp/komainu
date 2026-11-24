@@ -388,4 +388,4 @@ graph LR
 | ID | 内容 | 仮の扱い | 決める人・時期 |
 |---|---|---|---|
 | U-1 | `AuditKind`・`RevocationReason` を `#[non_exhaustive]` にして、今後の追加を破壊的変更にしないか | 今回は付けない（付けること自体が破壊的変更なので、0.1.0 正式版の前にまとめて判断する） | メンテナ・0.1.0 リリース前 |
-| U-2 | RFC 8414 メタデータを実装するときに `revocation_endpoint` と `revocation_endpoint_auth_methods_supported` を載せる | 今回はやらない | メタデータを設計するとき |
+| U-2 | RFC 8414 メタデータを実装するときに `revocation_endpoint` と `revocation_endpoint_auth_methods_supported` を載せる | 解消: [認可サーバーメタデータ](../authorization-server-metadata/README.md) で公開 | メタデータを設計するとき |

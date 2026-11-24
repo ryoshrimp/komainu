@@ -45,6 +45,12 @@ impl TokenService {
         Self { deps }
     }
 
+    /// What this server supports. Equivalent to `ServerCapabilities::from_config` of the
+    /// configuration this service was built with.
+    pub fn server_capabilities(&self) -> crate::ServerCapabilities {
+        crate::ServerCapabilities::from_config(&self.deps.config)
+    }
+
     /// Handles `POST /token`.
     pub async fn exchange(
         &self,
