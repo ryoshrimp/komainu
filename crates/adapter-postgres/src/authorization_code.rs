@@ -56,6 +56,16 @@ fn from_row(row: &PgRow) -> Result<AuthorizationCode, StoreError> {
         )?,
         redirect_uri_provided: col(row, "redirect_uri_provided")?,
         scope: scope_from_db(col(row, "scope")?, "authorization_codes.scope")?,
+        pkce: PkceChallenge::new(
+            valid(
+                CodeChallenge::try_new(col(row, "code_challenge")?),
+                "authorization_codes.code_challenge",
+            )?,
+            valid(
+                col::<String>(row, "code_challenge_method")?.parse(),
+                "authorization_codes.code_challenge_method",
+            )?,
+        ),
         status,
         issued_at: col(row, "issued_at")?,
         expires_at: col(row, "expires_at")?,
@@ -71,7 +81,7 @@ impl AuthorizationCodeRepository for PgUnitOfWork {
         Box::pin(async move {
             let row = sqlx::query(
                 "SELECT id, client_id, subject, redirect_uri, redirect_uri_provided, scope, \
-                 status, grant_id, redeemed_at, issued_at, expires_at \
+                 code_challenge, code_challenge_method, status, grant_id, redeemed_at, issued_at, expires_at \
                  FROM authorization_codes WHERE id = $1 FOR UPDATE",
             )
             .bind(hash_to_db(&id))
@@ -88,8 +98,9 @@ impl AuthorizationCodeRepository for PgUnitOfWork {
             let (status, grant_id, redeemed_at) = status_to_db(&r.status);
             sqlx::query(
                 "INSERT INTO authorization_codes (id, client_id, subject, redirect_uri, \
-                 redirect_uri_provided, scope, status, grant_id, redeemed_at, issued_at, \
-                 expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                 redirect_uri_provided, scope, code_challenge, code_challenge_method, status, \
+                 grant_id, redeemed_at, issued_at, expires_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
             )
             .bind(hash_to_db(&r.id))
             .bind(r.client_id.as_inner())
@@ -97,6 +108,8 @@ impl AuthorizationCodeRepository for PgUnitOfWork {
             .bind(r.redirect_uri.as_str())
             .bind(r.redirect_uri_provided)
             .bind(scope_to_db(&r.scope))
+            .bind(r.pkce.challenge().as_inner())
+            .bind(r.pkce.method().as_str())
             .bind(status)
             .bind(grant_id)
             .bind(redeemed_at)
@@ -115,8 +128,9 @@ impl AuthorizationCodeRepository for PgUnitOfWork {
             let (status, grant_id, redeemed_at) = status_to_db(&r.status);
             let done = sqlx::query(
                 "UPDATE authorization_codes SET client_id = $2, subject = $3, redirect_uri = $4, \
-                 redirect_uri_provided = $5, scope = $6, status = $7, grant_id = $8, \
-                 redeemed_at = $9, issued_at = $10, expires_at = $11 WHERE id = $1",
+                 redirect_uri_provided = $5, scope = $6, \
+                 code_challenge = $7, code_challenge_method = $8, status = $9, grant_id = $10, \
+                 redeemed_at = $11, issued_at = $12, expires_at = $13 WHERE id = $1",
             )
             .bind(hash_to_db(&r.id))
             .bind(r.client_id.as_inner())
@@ -124,6 +138,8 @@ impl AuthorizationCodeRepository for PgUnitOfWork {
             .bind(r.redirect_uri.as_str())
             .bind(r.redirect_uri_provided)
             .bind(scope_to_db(&r.scope))
+            .bind(r.pkce.challenge().as_inner())
+            .bind(r.pkce.method().as_str())
             .bind(status)
             .bind(grant_id)
             .bind(redeemed_at)

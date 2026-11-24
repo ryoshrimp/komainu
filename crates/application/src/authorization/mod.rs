@@ -5,8 +5,8 @@ mod params;
 
 use komainu_domain::{
     AuthorizationCode, AuthorizationRequest, AuthorizationRequestId, AuthorizationRequestStatus,
-    Client, ClientId, Consent, GrantType, LoginSession, NewAuthorizationRequest, OpaqueToken,
-    RedirectUri, ScopeSet, State, Subject,
+    Client, ClientId, CodeChallenge, CodeChallengeMethod, Consent, GrantType, LoginSession,
+    NewAuthorizationRequest, OpaqueToken, PkceChallenge, RedirectUri, ScopeSet, State, Subject,
 };
 use time::OffsetDateTime;
 
@@ -217,7 +217,32 @@ impl AuthorizationService {
             .resolve_scope(requested.as_ref())
             .map_err(|_| fail(AuthorizeErrorCode::InvalidScope, "scope is not allowed"))?;
 
-        // 10: the pending request.
+        // 10: PKCE (RFC 7636); S256 only.
+        let Some(challenge) = params.code_challenge.as_deref() else {
+            return Err(fail(
+                AuthorizeErrorCode::InvalidRequest,
+                "code_challenge is required",
+            ));
+        };
+        let Ok(method) = params
+            .code_challenge_method
+            .as_deref()
+            .unwrap_or_default()
+            .parse::<CodeChallengeMethod>()
+        else {
+            return Err(fail(
+                AuthorizeErrorCode::InvalidRequest,
+                "code_challenge_method must be S256",
+            ));
+        };
+        let challenge = CodeChallenge::try_new(challenge.to_owned()).map_err(|_| {
+            fail(
+                AuthorizeErrorCode::InvalidRequest,
+                "code_challenge is malformed",
+            )
+        })?;
+
+        // 11: the pending request.
         let csrf = new_opaque_token(deps.random.as_ref());
         let request = AuthorizationRequest::create(
             NewAuthorizationRequest {
@@ -231,12 +256,13 @@ impl AuthorizationService {
                 scope,
                 state,
                 csrf_token_hash: csrf.hash(),
+                pkce: PkceChallenge::new(challenge, method),
             },
             now,
             deps.config.authorization_request_ttl,
         );
 
-        // 11
+        // 12
         let subject = self.session_subject(uow.as_mut(), session, now).await?;
         let outcome = self
             .proceed(ctx, uow, &client, request, subject, true)
@@ -501,7 +527,7 @@ impl AuthorizationService {
         Ok((code, location))
     }
 
-    /// Step 11 of `start`: decides login / consent / code issuance and commits.
+    /// Step 12 of `start`: decides login / consent / code issuance and commits.
     async fn proceed(
         &self,
         ctx: &RequestContext,

@@ -148,7 +148,7 @@ fn duplicate_parameters_are_rejected() {
         query_param(&location, "error").as_deref(),
         Some("invalid_request")
     );
-    // from_pairs tracks duplicates among the five known names only.
+    // from_pairs tracks duplicates among the seven known names only.
     let p = AuthorizeParams::from_pairs([
         ("scope".to_owned(), "read".to_owned()),
         ("scope".to_owned(), "write".to_owned()),
@@ -158,6 +158,89 @@ fn duplicate_parameters_are_rejected() {
     ]);
     assert_eq!(p.duplicated, vec!["scope"]);
     assert_eq!(p.state, None);
+    let p = AuthorizeParams::from_pairs([
+        ("code_challenge".to_owned(), "a".to_owned()),
+        ("code_challenge".to_owned(), "b".to_owned()),
+        ("code_challenge_method".to_owned(), "S256".to_owned()),
+        ("code_challenge_method".to_owned(), "S256".to_owned()),
+    ]);
+    assert_eq!(
+        p.duplicated,
+        vec!["code_challenge", "code_challenge_method"]
+    );
+}
+
+/// The `error_description` of the redirect an invalid PKCE request produces (P-1 to P-4).
+fn pkce_error(fx: &Fixture, p: AuthorizeParams) -> String {
+    let location = redirect_location(start(fx, p));
+    assert_eq!(
+        query_param(&location, "error").as_deref(),
+        Some("invalid_request")
+    );
+    assert_eq!(query_param(&location, "state").as_deref(), Some("xyz"));
+    assert!(location.starts_with(REDIRECT));
+    assert!(fx.env.store.state().authorization_requests.is_empty());
+    query_param(&location, "error_description").unwrap()
+}
+
+#[test]
+fn missing_code_challenge_is_rejected() {
+    let (fx, client) = setup(false);
+    let p = params(&client.id, &[("code_challenge", "")]);
+    assert_eq!(pkce_error(&fx, p), "code_challenge+is+required");
+}
+
+#[test]
+fn missing_code_challenge_is_rejected_for_public_clients() {
+    let mut cfg = config();
+    cfg.allow_public_clients = true;
+    let fx = Fixture::with_config(cfg);
+    let mut input = confidential(&[komainu_domain::GrantType::AuthorizationCode]);
+    input.client_type = komainu_domain::ClientType::Public;
+    input.auth_method = komainu_domain::TokenEndpointAuthMethod::None;
+    let public = block_on(fx.admin.register_client(&ctx(), input)).unwrap();
+    let p = params(&public.client.id, &[("code_challenge", "")]);
+    assert_eq!(pkce_error(&fx, p), "code_challenge+is+required");
+}
+
+#[test]
+fn code_challenge_method_must_be_s256() {
+    let (fx, client) = setup(false);
+    for method in ["", "plain", "s256"] {
+        let p = params(&client.id, &[("code_challenge_method", method)]);
+        assert_eq!(
+            pkce_error(&fx, p),
+            "code_challenge_method+must+be+S256",
+            "{method:?}"
+        );
+    }
+}
+
+#[test]
+fn malformed_code_challenge_is_rejected() {
+    let (fx, client) = setup(false);
+    let ok = CODE_CHALLENGE;
+    for bad in [
+        &ok[..42],
+        &format!("{ok}A"),
+        &format!("{}=", &ok[..42]),
+        &format!("+{}", &ok[1..]),
+        &format!("/{}", &ok[1..]),
+        "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNB",
+    ] {
+        let p = params(&client.id, &[("code_challenge", bad)]);
+        assert_eq!(pkce_error(&fx, p), "code_challenge+is+malformed", "{bad}");
+    }
+}
+
+#[test]
+fn duplicate_pkce_parameters_are_rejected() {
+    let (fx, client) = setup(false);
+    for name in ["code_challenge", "code_challenge_method"] {
+        let mut p = params(&client.id, &[]);
+        p.duplicated.push(name);
+        assert_eq!(pkce_error(&fx, p), "a+parameter+appears+more+than+once");
+    }
 }
 
 fn started(

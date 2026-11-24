@@ -161,7 +161,9 @@ async fn obtain_code(h: &Harness, c: &Registered) -> String {
 }
 
 fn code_exchange_body(code: &str) -> String {
-    format!("grant_type=authorization_code&code={code}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb")
+    format!(
+        "grant_type=authorization_code&code={code}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&code_verifier=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
 }
 
 #[tokio::test]

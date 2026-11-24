@@ -18,6 +18,9 @@ use komainu_domain::{
 use komainu_testkit::TestEnv;
 
 pub const REDIRECT: &str = "https://app.example/cb";
+pub const CODE_VERIFIER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+/// The S256 challenge of [`CODE_VERIFIER`] (RFC 7636 §4.2).
+pub const CODE_CHALLENGE: &str = "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA";
 pub const PASSWORD: &str = "correct horse";
 
 /// Polls a future that never suspends (the in-memory adapters are synchronous).
@@ -149,6 +152,8 @@ pub fn params(client_id: &ClientId, extra: &[(&str, &str)]) -> AuthorizeParams {
         ("client_id".to_owned(), client_id.as_inner().to_string()),
         ("redirect_uri".to_owned(), REDIRECT.to_owned()),
         ("state".to_owned(), "xyz".to_owned()),
+        ("code_challenge".to_owned(), CODE_CHALLENGE.to_owned()),
+        ("code_challenge_method".to_owned(), "S256".to_owned()),
     ];
     for (k, v) in extra {
         pairs.retain(|(name, _)| name != k);
@@ -204,6 +209,7 @@ pub fn code_request(code: &str) -> TokenRequest {
         grant_type: Some("authorization_code".to_owned()),
         code: Some(code.to_owned()),
         redirect_uri: Some(REDIRECT.to_owned()),
+        code_verifier: Some(CODE_VERIFIER.to_owned()),
         ..TokenRequest::default()
     }
 }

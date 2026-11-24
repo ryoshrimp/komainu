@@ -4,7 +4,9 @@ use time::{Duration, OffsetDateTime};
 use super::event::AuthorizationCodeEvent;
 use super::request::{AuthorizationRequest, AuthorizationRequestStatus};
 use crate::error::DomainError;
-use crate::{ClientId, GrantId, RedirectUri, ScopeSet, Subject, TokenHash};
+use crate::{
+    ClientId, CodeVerifier, GrantId, PkceChallenge, RedirectUri, ScopeSet, Subject, TokenHash,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthorizationCodeStatus {
@@ -24,6 +26,8 @@ pub enum RedeemCodeError {
     ClientMismatch,
     Expired,
     RedirectUriMismatch,
+    /// `code_verifier` does not match the stored challenge.
+    PkceMismatch,
 }
 
 /// An authorization code. Its id is the SHA-256 of the code.
@@ -36,6 +40,7 @@ pub struct AuthorizationCode {
     redirect_uri: RedirectUri,
     redirect_uri_provided: bool,
     scope: ScopeSet,
+    pkce: PkceChallenge,
     status: AuthorizationCodeStatus,
     issued_at: OffsetDateTime,
     expires_at: OffsetDateTime,
@@ -52,6 +57,7 @@ pub struct AuthorizationCodeRecord {
     pub redirect_uri: RedirectUri,
     pub redirect_uri_provided: bool,
     pub scope: ScopeSet,
+    pub pkce: PkceChallenge,
     pub status: AuthorizationCodeStatus,
     pub issued_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
@@ -79,6 +85,7 @@ impl AuthorizationCode {
             redirect_uri: request.redirect_uri().clone(),
             redirect_uri_provided: request.redirect_uri_provided(),
             scope: request.scope().clone(),
+            pkce: request.pkce().clone(),
             status: AuthorizationCodeStatus::Issued,
             issued_at: now,
             expires_at: now + ttl,
@@ -105,14 +112,21 @@ impl AuthorizationCode {
         &self.scope
     }
 
+    pub fn pkce(&self) -> &PkceChallenge {
+        &self.pkce
+    }
+
     pub fn status(&self) -> &AuthorizationCodeStatus {
         &self.status
     }
 
+    /// Checks, in this order: Replayed, ClientMismatch, Expired, RedirectUriMismatch,
+    /// PkceMismatch. Only Replayed records an event; the other errors leave the code unchanged.
     pub fn redeem(
         &mut self,
         client_id: &ClientId,
         redirect_uri: Option<&RedirectUri>,
+        code_verifier: &CodeVerifier,
         grant_id: GrantId,
         now: OffsetDateTime,
     ) -> Result<(), RedeemCodeError> {
@@ -143,6 +157,9 @@ impl AuthorizationCode {
         if !uri_ok {
             return Err(RedeemCodeError::RedirectUriMismatch);
         }
+        if !self.pkce.verify(code_verifier) {
+            return Err(RedeemCodeError::PkceMismatch);
+        }
         self.status = AuthorizationCodeStatus::Redeemed {
             grant_id,
             redeemed_at: now,
@@ -165,6 +182,7 @@ impl AuthorizationCode {
             redirect_uri: self.redirect_uri.clone(),
             redirect_uri_provided: self.redirect_uri_provided,
             scope: self.scope.clone(),
+            pkce: self.pkce.clone(),
             status: self.status,
             issued_at: self.issued_at,
             expires_at: self.expires_at,
@@ -180,6 +198,7 @@ impl AuthorizationCode {
             redirect_uri: record.redirect_uri,
             redirect_uri_provided: record.redirect_uri_provided,
             scope: record.scope,
+            pkce: record.pkce,
             status: record.status,
             issued_at: record.issued_at,
             expires_at: record.expires_at,
@@ -190,8 +209,13 @@ impl AuthorizationCode {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::super::request::tests::{request, subject, t0};
+    use super::super::request::tests::{pkce, request, subject, t0};
     use super::*;
+    use crate::Secret;
+
+    pub fn verifier(c: char) -> CodeVerifier {
+        CodeVerifier::try_new(Secret::new(c.to_string().repeat(43))).unwrap()
+    }
 
     pub fn issued_code(provided: bool) -> AuthorizationCode {
         let mut req = request(provided);
@@ -242,12 +266,24 @@ pub(crate) mod tests {
     fn expiry_boundary() {
         let mut ok = issued_code(true);
         assert_eq!(
-            ok.redeem(&cid(), Some(&cb()), gid(1), t0() + Duration::seconds(59)),
+            ok.redeem(
+                &cid(),
+                Some(&cb()),
+                &verifier('a'),
+                gid(1),
+                t0() + Duration::seconds(59)
+            ),
             Ok(())
         );
         let mut late = issued_code(true);
         assert_eq!(
-            late.redeem(&cid(), Some(&cb()), gid(1), t0() + Duration::seconds(60)),
+            late.redeem(
+                &cid(),
+                Some(&cb()),
+                &verifier('a'),
+                gid(1),
+                t0() + Duration::seconds(60)
+            ),
             Err(RedeemCodeError::Expired)
         );
     }
@@ -256,12 +292,13 @@ pub(crate) mod tests {
     fn replay_returns_first_grant_id() {
         let mut code = issued_code(true);
         code.pull_events();
-        code.redeem(&cid(), Some(&cb()), gid(1), t0()).unwrap();
+        code.redeem(&cid(), Some(&cb()), &verifier('a'), gid(1), t0())
+            .unwrap();
         assert!(
             matches!(code.status(), AuthorizationCodeStatus::Redeemed { grant_id, .. } if *grant_id == gid(1))
         );
         assert_eq!(
-            code.redeem(&cid(), Some(&cb()), gid(2), t0()),
+            code.redeem(&cid(), Some(&cb()), &verifier('a'), gid(2), t0()),
             Err(RedeemCodeError::Replayed { grant_id: gid(1) })
         );
         assert!(matches!(
@@ -276,16 +313,16 @@ pub(crate) mod tests {
         let other = ClientId::try_new("c2".to_owned()).unwrap();
         let mut code = issued_code(true);
         assert_eq!(
-            code.redeem(&other, Some(&cb()), gid(1), t0()),
+            code.redeem(&other, Some(&cb()), &verifier('a'), gid(1), t0()),
             Err(RedeemCodeError::ClientMismatch)
         );
         assert_eq!(
-            code.redeem(&cid(), None, gid(1), t0()),
+            code.redeem(&cid(), None, &verifier('a'), gid(1), t0()),
             Err(RedeemCodeError::RedirectUriMismatch)
         );
         let diff = RedirectUri::try_new("https://a.example/cb2".to_owned()).unwrap();
         assert_eq!(
-            code.redeem(&cid(), Some(&diff), gid(1), t0()),
+            code.redeem(&cid(), Some(&diff), &verifier('a'), gid(1), t0()),
             Err(RedeemCodeError::RedirectUriMismatch)
         );
         assert_eq!(code.status(), &AuthorizationCodeStatus::Issued);
@@ -293,12 +330,48 @@ pub(crate) mod tests {
         // redirect_uri_provided = false: omitted is fine, a differing one is not.
         let mut code = issued_code(false);
         assert_eq!(
-            code.redeem(&cid(), Some(&diff), gid(1), t0()),
+            code.redeem(&cid(), Some(&diff), &verifier('a'), gid(1), t0()),
             Err(RedeemCodeError::RedirectUriMismatch)
         );
-        assert_eq!(code.redeem(&cid(), None, gid(1), t0()), Ok(()));
+        assert_eq!(
+            code.redeem(&cid(), None, &verifier('a'), gid(1), t0()),
+            Ok(())
+        );
         let mut code = issued_code(false);
-        assert_eq!(code.redeem(&cid(), Some(&cb()), gid(1), t0()), Ok(()));
+        assert_eq!(
+            code.redeem(&cid(), Some(&cb()), &verifier('a'), gid(1), t0()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn pkce_mismatch_leaves_code_issued_and_ranks_last() {
+        let mut code = issued_code(true);
+        assert_eq!(code.pkce(), &pkce());
+        code.pull_events();
+        assert_eq!(
+            code.redeem(&cid(), Some(&cb()), &verifier('b'), gid(1), t0()),
+            Err(RedeemCodeError::PkceMismatch)
+        );
+        assert_eq!(code.status(), &AuthorizationCodeStatus::Issued);
+        assert!(code.pull_events().is_empty());
+        // Earlier checks win over a PKCE mismatch.
+        let other = ClientId::try_new("c2".to_owned()).unwrap();
+        assert_eq!(
+            code.redeem(&other, Some(&cb()), &verifier('b'), gid(1), t0()),
+            Err(RedeemCodeError::ClientMismatch)
+        );
+        assert_eq!(
+            code.redeem(&cid(), None, &verifier('b'), gid(1), t0()),
+            Err(RedeemCodeError::RedirectUriMismatch)
+        );
+        // Replay is detected before the PKCE check.
+        code.redeem(&cid(), Some(&cb()), &verifier('a'), gid(1), t0())
+            .unwrap();
+        assert_eq!(
+            code.redeem(&cid(), Some(&cb()), &verifier('b'), gid(2), t0()),
+            Err(RedeemCodeError::Replayed { grant_id: gid(1) })
+        );
     }
 
     #[test]
@@ -306,7 +379,13 @@ pub(crate) mod tests {
         let other = ClientId::try_new("c2".to_owned()).unwrap();
         let mut code = issued_code(true);
         assert_eq!(
-            code.redeem(&other, None, gid(1), t0() + Duration::seconds(120)),
+            code.redeem(
+                &other,
+                None,
+                &verifier('a'),
+                gid(1),
+                t0() + Duration::seconds(120)
+            ),
             Err(RedeemCodeError::ClientMismatch)
         );
     }
@@ -314,7 +393,8 @@ pub(crate) mod tests {
     #[test]
     fn events_do_not_leak_code_hash() {
         let mut code = issued_code(true);
-        code.redeem(&cid(), Some(&cb()), gid(1), t0()).unwrap();
+        code.redeem(&cid(), Some(&cb()), &verifier('a'), gid(1), t0())
+            .unwrap();
         assert!(matches!(
             code.pull_events().as_slice(),
             [

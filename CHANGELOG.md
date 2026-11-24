@@ -9,6 +9,31 @@ a breaking change bumps the minor version.
 
 ## [Unreleased]
 
+### Added
+
+- PKCE ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)) with the `S256` method. The
+  authorization endpoint takes `code_challenge` and `code_challenge_method`, and the token
+  endpoint takes `code_verifier` for the `authorization_code` grant.
+- Migration `0003` (applied automatically by `migrate`) adds the `code_challenge` and
+  `code_challenge_method` columns to `authorization_requests` and `authorization_codes`.
+
+### Changed
+
+- PKCE is now required for every client, confidential or public. An authorization request without
+  `code_challenge`, or with a `code_challenge_method` other than `S256`, is answered with
+  `invalid_request`, and a code exchange without a matching `code_verifier` is refused. Clients
+  must send the PKCE parameters; there is no setting to turn this off.
+- Migration `0003` deletes all rows of `authorization_requests` and `authorization_codes`, because
+  they carry no challenge. Users in the middle of a sign-in start again.
+- `NewAuthorizationRequest`, `AuthorizationRequestRecord` and `AuthorizationCodeRecord` have a new
+  `pkce: PkceChallenge` field, and `AuthorizeParams` and `TokenRequest` have new fields for the
+  PKCE parameters. Code that builds them with a struct literal must set the new fields.
+- `AuthorizationCode::redeem` takes a new `code_verifier: &CodeVerifier` argument, and
+  `RedeemCodeError` has a new variant `PkceMismatch`. It is exhaustive, so a `match` without a
+  wildcard arm no longer compiles.
+- A store adapter outside this repository must save and read `pkce` for authorization requests and
+  codes. The `authorization_flow_records_roundtrip` case of `komainu-testkit` checks this.
+
 ## [0.1.0-alpha.3] - 2026-11-24
 
 ### Added

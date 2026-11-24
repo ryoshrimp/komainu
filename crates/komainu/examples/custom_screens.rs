@@ -130,9 +130,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
+    // PKCE is required. This fixed challenge is the S256 challenge of a `code_verifier` of 43
+    // `a` characters; the URL is only for viewing the login screen.
     println!(
         "open: http://127.0.0.1:8080/authorize?response_type=code&client_id={}\
-&redirect_uri=http%3A%2F%2F127.0.0.1%3A9000%2Fcb&scope=read&state=xyz",
+&redirect_uri=http%3A%2F%2F127.0.0.1%3A9000%2Fcb&scope=read&state=xyz\
+&code_challenge=ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA&code_challenge_method=S256",
         registered.client.id.as_inner()
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;

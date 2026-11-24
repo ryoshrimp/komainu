@@ -228,8 +228,11 @@ pub fn authorize_uri(client_id: &str, extra: &str) -> String {
     authorize_uri_with_scope(client_id, "read", extra)
 }
 
+/// The S256 challenge of a `code_verifier` of 43 `a` characters.
+pub const CODE_CHALLENGE: &str = "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA";
+
 pub fn authorize_uri_with_scope(client_id: &str, scope: &str, extra: &str) -> String {
     format!(
-        "/authorize?response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&scope={scope}&state=xyz{extra}"
+        "/authorize?response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&scope={scope}&state=xyz&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256{extra}"
     )
 }

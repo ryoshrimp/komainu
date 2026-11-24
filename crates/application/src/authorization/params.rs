@@ -8,6 +8,8 @@ pub struct AuthorizeParams {
     pub redirect_uri: Option<String>,
     pub scope: Option<String>,
     pub state: Option<String>,
+    pub code_challenge: Option<String>,
+    pub code_challenge_method: Option<String>,
     /// Names of the above parameters that appeared more than once.
     pub duplicated: Vec<&'static str>,
 }
@@ -15,7 +17,18 @@ pub struct AuthorizeParams {
 impl AuthorizeParams {
     /// Unknown parameters are ignored.
     pub fn from_pairs(pairs: impl IntoIterator<Item = (String, String)>) -> Self {
-        let ([response_type, client_id, redirect_uri, scope, state], duplicated) = collect_params(
+        let (
+            [
+                response_type,
+                client_id,
+                redirect_uri,
+                scope,
+                state,
+                code_challenge,
+                code_challenge_method,
+            ],
+            duplicated,
+        ) = collect_params(
             pairs,
             [
                 "response_type",
@@ -23,6 +36,8 @@ impl AuthorizeParams {
                 "redirect_uri",
                 "scope",
                 "state",
+                "code_challenge",
+                "code_challenge_method",
             ],
         );
         Self {
@@ -31,6 +46,8 @@ impl AuthorizeParams {
             redirect_uri,
             scope,
             state,
+            code_challenge,
+            code_challenge_method,
             duplicated,
         }
     }

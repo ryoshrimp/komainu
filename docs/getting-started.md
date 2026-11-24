@@ -82,10 +82,18 @@ is no refresh token for this grant.
 
 ## 6. Authorization code
 
-Open this URL in a browser (replace `WEB_ID`):
+PKCE is required for every client. Make a random `code_verifier` and its S256 `code_challenge`:
+
+```sh
+VERIFIER=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')
+CHALLENGE=$(printf %s "$VERIFIER" | openssl dgst -sha256 -binary | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+echo "$CHALLENGE"
+```
+
+Open this URL in a browser (replace `WEB_ID` and `CHALLENGE`):
 
 ```
-http://localhost:8080/authorize?response_type=code&client_id=WEB_ID&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fcallback&scope=read&state=xyz
+http://localhost:8080/authorize?response_type=code&client_id=WEB_ID&redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fcallback&scope=read&state=xyz&code_challenge=CHALLENGE&code_challenge_method=S256
 ```
 
 Sign in as `alice` and allow the access. The browser is redirected to
@@ -93,7 +101,7 @@ Sign in as `alice` and allow the access. The browser is redirected to
 `code` from the address bar). The code is valid for 60 seconds and can be used once:
 
 ```sh
-curl -u "$WEB_ID:$WEB_SECRET" -d grant_type=authorization_code -d code=CODE \
+curl -u "$WEB_ID:$WEB_SECRET" -d grant_type=authorization_code -d code=CODE -d code_verifier="$VERIFIER" \
   --data-urlencode redirect_uri=http://localhost:3000/callback http://localhost:8080/token
 ```
 

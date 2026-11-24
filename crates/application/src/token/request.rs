@@ -32,6 +32,7 @@ pub struct TokenRequest {
     pub redirect_uri: Option<String>,
     pub scope: Option<String>,
     pub refresh_token: Option<String>,
+    pub code_verifier: Option<String>,
     /// Names of the above parameters that appeared more than once.
     pub duplicated: Vec<&'static str>,
 }
@@ -39,7 +40,17 @@ pub struct TokenRequest {
 impl TokenRequest {
     /// `client_id` and `client_secret` are not read here (the HTTP layer extracts them).
     pub fn from_pairs(pairs: impl IntoIterator<Item = (String, String)>) -> Self {
-        let ([grant_type, code, redirect_uri, scope, refresh_token], duplicated) = collect_params(
+        let (
+            [
+                grant_type,
+                code,
+                redirect_uri,
+                scope,
+                refresh_token,
+                code_verifier,
+            ],
+            duplicated,
+        ) = collect_params(
             pairs,
             [
                 "grant_type",
@@ -47,6 +58,7 @@ impl TokenRequest {
                 "redirect_uri",
                 "scope",
                 "refresh_token",
+                "code_verifier",
             ],
         );
         Self {
@@ -55,6 +67,7 @@ impl TokenRequest {
             redirect_uri,
             scope,
             refresh_token,
+            code_verifier,
             duplicated,
         }
     }
@@ -80,6 +93,7 @@ impl fmt::Debug for TokenRequest {
             .field("redirect_uri", &self.redirect_uri)
             .field("scope", &self.scope)
             .field("refresh_token", &Redacted(&self.refresh_token))
+            .field("code_verifier", &Redacted(&self.code_verifier))
             .field("duplicated", &self.duplicated)
             .finish()
     }

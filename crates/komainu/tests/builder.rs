@@ -196,9 +196,12 @@ mod flow {
             .unwrap()
     }
 
+    /// The S256 challenge of a `code_verifier` of 43 `a` characters.
+    const CODE_CHALLENGE: &str = "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA";
+
     fn authorize_uri(client_id: &str) -> String {
         format!(
-            "/authorize?response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&scope=read&state=xyz"
+            "/authorize?response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&scope=read&state=xyz&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256"
         )
     }
 
@@ -263,7 +266,7 @@ mod flow {
             Request::post("/token")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(format!(
-                    "grant_type=authorization_code&code={code}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&client_id={client_id}&client_secret={secret}"
+                    "grant_type=authorization_code&code={code}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&code_verifier=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&client_id={client_id}&client_secret={secret}"
                 )))
                 .unwrap(),
         )

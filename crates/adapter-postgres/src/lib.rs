@@ -81,7 +81,14 @@ pub async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         include_str!("../migrations/0002_client_request_revocation.sql").into_sql_str(),
         false,
     );
-    Migrator::with_migrations(vec![init, client_request])
+    let pkce = Migration::new(
+        3,
+        Cow::Borrowed("pkce"),
+        MigrationType::Simple,
+        include_str!("../migrations/0003_pkce.sql").into_sql_str(),
+        false,
+    );
+    Migrator::with_migrations(vec![init, client_request, pkce])
         .run(pool)
         .await
         .map_err(|e| StoreError::Other(format!("migration failed: {e}")))
