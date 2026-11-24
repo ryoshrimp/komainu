@@ -430,7 +430,7 @@ async fn omitted_scope_uses_the_client_default_scopes() {
     let client = h.register(input).await;
 
     let uri = format!(
-        "/authorize?response_type=code&client_id={}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&state=xyz",
+        "/authorize?response_type=code&client_id={}&redirect_uri=https%3A%2F%2Fapp.example%2Fcb&state=xyz&code_challenge={CODE_CHALLENGE}&code_challenge_method=S256",
         client.id()
     );
     let reply = h.send(get(&uri, "")).await;

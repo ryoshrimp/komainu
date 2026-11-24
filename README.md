@@ -19,6 +19,8 @@ Grants and endpoints:
 - Client authentication with `client_secret_basic` (always) and `client_secret_post`
   (per client); public clients are off by default (`clients.allow_public`)
 - Refresh token rotation. Reusing a rotated refresh token revokes the whole token series
+- PKCE ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)), required for every client; only the
+  `S256` method is supported
 - Reusing an authorization code revokes the tokens issued from it
 - Remembered consent, and a per-client `skip_consent` option
 - A library API to verify access tokens (`TokenService::verify_access_token`)
@@ -33,7 +35,7 @@ Operations:
 Secrets (tokens, codes, client secrets, session IDs) are stored only as SHA-256 hashes, passwords
 are stored with Argon2id, and none of these values is written to the logs.
 
-Not supported (yet): PKCE, OpenID Connect, JWT access tokens, the token introspection endpoint, dynamic client registration, the implicit and password grants, external identity
+Not supported (yet): OpenID Connect, JWT access tokens, the token introspection endpoint, dynamic client registration, the implicit and password grants, external identity
 providers, rate limiting of logins, TLS termination (use a reverse proxy), translations of the built-in
 screens (they are English only; see [Embedding](#embedding-as-a-library) to replace them), and a
 REST/UI for administration.

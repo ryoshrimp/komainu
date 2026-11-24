@@ -21,20 +21,24 @@ fn audit_kinds(fx: &Fixture) -> Vec<AuditKind> {
 }
 
 #[test]
-fn token_request_debug_redacts_code_and_refresh_token() {
+fn token_request_debug_redacts_secrets() {
     let req = TokenRequest {
         grant_type: Some("authorization_code".to_owned()),
         code: Some("abc123".to_owned()),
         refresh_token: Some("rt-xyz".to_owned()),
+        code_verifier: Some("v".repeat(43)),
         ..TokenRequest::default()
     };
     let text = format!("{req:?}");
     assert_eq!(
         text,
         "TokenRequest { grant_type: Some(\"authorization_code\"), code: Some([REDACTED]), \
-         redirect_uri: None, scope: None, refresh_token: Some([REDACTED]), duplicated: [] }"
+         redirect_uri: None, scope: None, refresh_token: Some([REDACTED]), code_verifier: Some([REDACTED]), \
+         duplicated: [] }"
     );
-    assert!(!text.contains("abc123") && !text.contains("rt-xyz"));
+    assert!(
+        !text.contains("abc123") && !text.contains("rt-xyz") && !text.contains(&"v".repeat(43))
+    );
 }
 
 #[test]
@@ -50,6 +54,118 @@ fn authorization_code_exchange_returns_tokens() {
         .expect("access token is valid");
     assert_eq!(info.client_id, client.id);
     assert!(info.subject.is_some());
+    assert_no_verifier_in_audit(&fx);
+}
+
+fn assert_no_verifier_in_audit(fx: &Fixture) {
+    for event in fx.env.store.audit_events() {
+        for value in event.details.values() {
+            assert!(!value.contains(CODE_VERIFIER) && !value.contains(&"b".repeat(43)));
+        }
+    }
+}
+
+#[test]
+fn missing_code_verifier_is_invalid_request_and_keeps_the_code() {
+    let (fx, client, code) = setup();
+    let mut req = code_request(&code);
+    req.code_verifier = None;
+    assert!(matches!(
+        exchange(&fx, client.basic(), req),
+        Err(TokenError::InvalidRequest)
+    ));
+    assert!(exchange(&fx, client.basic(), code_request(&code)).is_ok());
+    assert_no_verifier_in_audit(&fx);
+}
+
+#[test]
+fn malformed_code_verifier_is_invalid_grant_and_keeps_the_code() {
+    let (fx, client, code) = setup();
+    for bad in [
+        "a".repeat(42),
+        "a".repeat(129),
+        format!("{}!", "a".repeat(42)),
+    ] {
+        let mut req = code_request(&code);
+        req.code_verifier = Some(bad);
+        assert!(matches!(
+            exchange(&fx, client.basic(), req),
+            Err(TokenError::InvalidGrant)
+        ));
+    }
+    assert!(exchange(&fx, client.basic(), code_request(&code)).is_ok());
+}
+
+#[test]
+fn mismatched_code_verifier_is_invalid_grant_and_keeps_the_code() {
+    let (fx, client, code) = setup();
+    let mut req = code_request(&code);
+    req.code_verifier = Some("b".repeat(43));
+    assert!(matches!(
+        exchange(&fx, client.basic(), req),
+        Err(TokenError::InvalidGrant)
+    ));
+    let state = fx.env.store.state();
+    assert!(state.grants.is_empty());
+    assert!(state.access_tokens.is_empty() && state.refresh_tokens.is_empty());
+    assert!(exchange(&fx, client.basic(), code_request(&code)).is_ok());
+    assert_no_verifier_in_audit(&fx);
+}
+
+#[test]
+fn replay_is_detected_before_the_pkce_check() {
+    for verifier in [CODE_VERIFIER.to_owned(), "b".repeat(43)] {
+        let (fx, client, code) = setup();
+        let first = exchange(&fx, client.basic(), code_request(&code)).unwrap();
+        let mut req = code_request(&code);
+        req.code_verifier = Some(verifier);
+        assert!(matches!(
+            exchange(&fx, client.basic(), req),
+            Err(TokenError::InvalidGrant)
+        ));
+        assert!(
+            block_on(fx.token.verify_access_token(first.access_token.expose()))
+                .unwrap()
+                .is_none()
+        );
+        let kinds = audit_kinds(&fx);
+        assert!(kinds.contains(&AuditKind::AuthorizationCodeReplayDetected));
+        assert!(kinds.contains(&AuditKind::GrantRevoked));
+        let revoked = fx
+            .env
+            .store
+            .audit_events()
+            .into_iter()
+            .find(|e| e.kind == AuditKind::GrantRevoked)
+            .unwrap();
+        assert_eq!(revoked.details["reason"], "code_replay");
+        assert_no_verifier_in_audit(&fx);
+    }
+}
+
+#[test]
+fn replay_without_a_valid_code_verifier_does_not_revoke() {
+    let (fx, client, code) = setup();
+    let first = exchange(&fx, client.basic(), code_request(&code)).unwrap();
+    let events = fx.env.store.audit_events().len();
+    let mut missing = code_request(&code);
+    missing.code_verifier = None;
+    assert!(matches!(
+        exchange(&fx, client.basic(), missing),
+        Err(TokenError::InvalidRequest)
+    ));
+    let mut malformed = code_request(&code);
+    malformed.code_verifier = Some("short".to_owned());
+    assert!(matches!(
+        exchange(&fx, client.basic(), malformed),
+        Err(TokenError::InvalidGrant)
+    ));
+    assert!(
+        block_on(fx.token.verify_access_token(first.access_token.expose()))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(fx.env.store.audit_events().len(), events);
 }
 
 #[test]

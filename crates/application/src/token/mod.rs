@@ -4,9 +4,9 @@ mod error;
 mod request;
 
 use komainu_domain::{
-    AccessToken, Client, ClientId, Grant, GrantId, GrantType, OpaqueToken, RedeemCodeError,
-    RedirectUri, RefreshToken, RevocationReason, RotateRefreshTokenError, ScopeSet, Secret,
-    TokenEndpointAuthMethod,
+    AccessToken, Client, ClientId, CodeVerifier, Grant, GrantId, GrantType, OpaqueToken,
+    RedeemCodeError, RedirectUri, RefreshToken, RevocationReason, RotateRefreshTokenError,
+    ScopeSet, Secret, TokenEndpointAuthMethod,
 };
 
 pub use error::{RevocationError, TokenError};
@@ -353,7 +353,13 @@ impl TokenService {
         let deps = &self.deps;
         let now = deps.clock.now();
         let raw = request.code.as_deref().ok_or(TokenError::InvalidRequest)?;
+        let raw_verifier = request
+            .code_verifier
+            .as_deref()
+            .ok_or(TokenError::InvalidRequest)?;
         let code_token = parse_token(raw).ok_or(TokenError::InvalidGrant)?;
+        let code_verifier = CodeVerifier::try_new(Secret::new(raw_verifier.to_owned()))
+            .map_err(|_| TokenError::InvalidGrant)?;
         let mut code = uow
             .authorization_codes()
             .find_for_update(&code_token.hash())
@@ -366,7 +372,13 @@ impl TokenService {
             None => None,
         };
         let grant_id = GrantId::new(new_uuid_v7(deps.clock.as_ref(), deps.random.as_ref()));
-        match code.redeem(client.id(), redirect_uri.as_ref(), grant_id, now) {
+        match code.redeem(
+            client.id(),
+            redirect_uri.as_ref(),
+            &code_verifier,
+            grant_id,
+            now,
+        ) {
             Ok(()) => {}
             Err(RedeemCodeError::Replayed { grant_id }) => {
                 return Ok(Step::Replay {

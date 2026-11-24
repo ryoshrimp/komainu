@@ -6,7 +6,7 @@
 
 ## 1. 概要
 
-komainu は Rust で書く OAuth 2.0 認可サーバーである。今回の段階では RFC 6749 の認可コードグラント（§4.1）、クライアントクレデンシャルグラント（§4.4）、リフレッシュトークン（§6）だけを実装する。PKCE、OIDC、Introspection（RFC 7662）、Revocation（RFC 7009）、Dynamic Client Registration（RFC 7591）などは後のステップで足していく。そのため、拡張しやすいドメインモデルと port/adapter 構成を最初に固めておく。目的は OAuth 仕様の学習と、将来 OSS として公開することである。組み込み用のライブラリ crate 群と、それを組み立てた単体サーバーバイナリの両方を提供する。
+komainu は Rust で書く OAuth 2.0 認可サーバーである。今回の段階では RFC 6749 の認可コードグラント（§4.1）、クライアントクレデンシャルグラント（§4.4）、リフレッシュトークン（§6）と PKCE（RFC 7636）を実装する。OIDC、Introspection（RFC 7662）、Revocation（RFC 7009）、Dynamic Client Registration（RFC 7591）などは後のステップで足していく。そのため、拡張しやすいドメインモデルと port/adapter 構成を最初に固めておく。目的は OAuth 仕様の学習と、将来 OSS として公開することである。組み込み用のライブラリ crate 群と、それを組み立てた単体サーバーバイナリの両方を提供する。
 
 ## 2. 要件
 
@@ -33,7 +33,7 @@ komainu は Rust で書く OAuth 2.0 認可サーバーである。今回の段�
   - 運用: tracing による構造化ログ、監査ログ（DB に保存）、Prometheus メトリクス、ヘルスチェック、期限切れデータの定期削除、グレースフルシャットダウン
   - PostgreSQL アダプタ（sqlx）
 - やらないこと
-  - PKCE（RFC 7636）、OIDC、JWT アクセストークン（RFC 9068）、Introspection / Revocation エンドポイント、RFC 7591、メタデータ（RFC 8414）
+  - OIDC、JWT アクセストークン（RFC 9068）、Introspection / Revocation エンドポイント、RFC 7591、メタデータ（RFC 8414）
   - Implicit グラント（§4.2）、Resource Owner Password Credentials グラント（§4.3）、拡張グラント（§4.5）
   - 管理用の REST API と UI（RFC 7591 を実装した後で検討する）
   - リダイレクト型の外部 IdP 連携（SAML、外部 OIDC など）。認証 port は「ユーザー名とパスワードを検証する」形に限る
@@ -411,7 +411,7 @@ RFC 6749 コアの後に足していく機能の順番。上から順に進め�
 |---|---|---|
 | 済 | トークン失効エンドポイント（RFC 7009）。[設計書](../token-revocation/README.md) | 0.1.0-alpha.2 で実装済み |
 | 済 | JOSE クレート `komainu-jose`（JWS / JWK / JWT）。[設計書](../jose/README.md) | 0.1.0-alpha.3 で実装済み |
-| 1 | PKCE（RFC 7636） | 未着手 |
+| 済 | PKCE（RFC 7636）。[設計書](../pkce/README.md) | 次のリリースで実装済み（Unreleased） |
 | 2 | 認可サーバーメタデータ（RFC 8414） | 未着手 |
 | 3 | JWT アサーションによるクライアント認証（`private_key_jwt`）と認可グラント（RFC 7521 / 7523）。[#19](https://github.com/ryoshrimp/komainu/issues/19) | 未着手。決定事項は Issue に記載 |
 | 未定 | JWT アクセストークン（RFC 9068）、OIDC、Introspection（RFC 7662）、Dynamic Client Registration（RFC 7591） | 順番は未定 |

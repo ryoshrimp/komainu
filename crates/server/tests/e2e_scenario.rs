@@ -18,6 +18,9 @@ use reqwest::{Client, Response, StatusCode, redirect::Policy};
 use url::Url;
 use url::form_urlencoded;
 
+/// `CODE_CHALLENGE` is the S256 challenge of `CODE_VERIFIER`.
+const CODE_VERIFIER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const CODE_CHALLENGE: &str = "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA";
 const REDIRECT_URI: &str = "https://app.example/cb";
 const PASSWORD: &str = "e2e-correct-horse-battery";
 const WRONG_PASSWORD: &str = "e2e-wrong-password-value";
@@ -203,6 +206,8 @@ impl Harness {
             ("redirect_uri", REDIRECT_URI),
             ("scope", scope),
             ("state", "xyz"),
+            ("code_challenge", CODE_CHALLENGE),
+            ("code_challenge_method", "S256"),
         ];
         pairs.extend_from_slice(extra);
         format!("{}/authorize?{}", self.base, form(&pairs))
@@ -275,6 +280,7 @@ impl Harness {
                     ("grant_type", "authorization_code"),
                     ("code", code),
                     ("redirect_uri", REDIRECT_URI),
+                    ("code_verifier", CODE_VERIFIER),
                 ],
                 None,
             )
@@ -398,6 +404,7 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
 
     let web = (web_id.as_str(), web_secret.as_str());
     let mut secrets: Vec<(&str, String)> = vec![
+        ("code verifier", CODE_VERIFIER.to_owned()),
         ("password", PASSWORD.into()),
         ("wrong password", WRONG_PASSWORD.into()),
         ("wrong client secret", WRONG_SECRET.into()),
@@ -535,6 +542,7 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
                 ("grant_type", "authorization_code"),
                 ("code", &code1),
                 ("redirect_uri", REDIRECT_URI),
+                ("code_verifier", CODE_VERIFIER),
             ],
             None,
         )

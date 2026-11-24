@@ -6,7 +6,8 @@ use time::{Duration, OffsetDateTime};
 use super::event::AuthorizationRequestEvent;
 use crate::error::DomainError;
 use crate::{
-    AuthorizationRequestId, ClientId, OpaqueToken, RedirectUri, ScopeSet, State, Subject, TokenHash,
+    AuthorizationRequestId, ClientId, OpaqueToken, PkceChallenge, RedirectUri, ScopeSet, State,
+    Subject, TokenHash,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -55,6 +56,7 @@ pub struct NewAuthorizationRequest {
     pub scope: ScopeSet,
     pub state: Option<State>,
     pub csrf_token_hash: TokenHash,
+    pub pkce: PkceChallenge,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +76,7 @@ pub struct AuthorizationRequest {
     scope: ScopeSet,
     state: Option<State>,
     csrf_token_hash: TokenHash,
+    pkce: PkceChallenge,
     status: AuthorizationRequestStatus,
     subject: Option<Subject>,
     created_at: OffsetDateTime,
@@ -93,6 +96,7 @@ pub struct AuthorizationRequestRecord {
     pub scope: ScopeSet,
     pub state: Option<State>,
     pub csrf_token_hash: TokenHash,
+    pub pkce: PkceChallenge,
     pub status: AuthorizationRequestStatus,
     pub subject: Option<Subject>,
     pub created_at: OffsetDateTime,
@@ -114,6 +118,7 @@ impl AuthorizationRequest {
             scope: new.scope,
             state: new.state,
             csrf_token_hash: new.csrf_token_hash,
+            pkce: new.pkce,
             status: AuthorizationRequestStatus::Pending,
             subject: None,
             created_at: now,
@@ -137,6 +142,10 @@ impl AuthorizationRequest {
 
     pub fn state(&self) -> Option<&State> {
         self.state.as_ref()
+    }
+
+    pub fn pkce(&self) -> &PkceChallenge {
+        &self.pkce
     }
 
     pub fn status(&self) -> AuthorizationRequestStatus {
@@ -224,6 +233,7 @@ impl AuthorizationRequest {
             scope: self.scope.clone(),
             state: self.state.clone(),
             csrf_token_hash: self.csrf_token_hash,
+            pkce: self.pkce.clone(),
             status: self.status,
             subject: self.subject.clone(),
             created_at: self.created_at,
@@ -242,6 +252,7 @@ impl AuthorizationRequest {
             scope: record.scope,
             state: record.state,
             csrf_token_hash: record.csrf_token_hash,
+            pkce: record.pkce,
             status: record.status,
             subject: record.subject,
             created_at: record.created_at,
@@ -255,7 +266,7 @@ impl AuthorizationRequest {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::Secret;
+    use crate::{CodeChallenge, CodeChallengeMethod, Secret};
 
     pub fn token(s: &str) -> OpaqueToken {
         OpaqueToken::try_new(Secret::new(s.to_owned())).unwrap()
@@ -263,6 +274,14 @@ pub(super) mod tests {
 
     pub fn t0() -> OffsetDateTime {
         OffsetDateTime::UNIX_EPOCH
+    }
+
+    pub fn pkce() -> PkceChallenge {
+        PkceChallenge::new(
+            CodeChallenge::try_new("ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA".to_owned())
+                .unwrap(),
+            CodeChallengeMethod::S256,
+        )
     }
 
     pub fn request(provided: bool) -> AuthorizationRequest {
@@ -275,6 +294,7 @@ pub(super) mod tests {
                 scope: ScopeSet::parse("read").unwrap(),
                 state: Some(State::try_new("xyz".to_owned()).unwrap()),
                 csrf_token_hash: token("csrf").hash(),
+                pkce: pkce(),
             },
             t0(),
             Duration::seconds(600),
@@ -327,6 +347,15 @@ pub(super) mod tests {
             req.approve(subject(), expiry),
             Err(AuthorizationRequestError::NotPending)
         );
+    }
+
+    #[test]
+    fn record_round_trips_pkce() {
+        let req = request(true);
+        assert_eq!(req.pkce(), &pkce());
+        let record = req.to_record();
+        assert_eq!(record.pkce, pkce());
+        assert_eq!(AuthorizationRequest::from_record(record).pkce(), &pkce());
     }
 
     #[test]

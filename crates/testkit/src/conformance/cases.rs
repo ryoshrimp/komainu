@@ -186,6 +186,7 @@ async fn authorization_flow_records_roundtrip(store: Store) -> CaseResult {
         scope: scope("read write"),
         state: Some(State::try_new("xyz".to_owned()).unwrap()),
         csrf_token_hash: hash(2),
+        pkce: pkce(),
         status: AuthorizationRequestStatus::Approved,
         subject: Some(subject("alice")),
         created_at: t(0),
@@ -200,6 +201,7 @@ async fn authorization_flow_records_roundtrip(store: Store) -> CaseResult {
         redirect_uri: uri("https://a.example/cb"),
         redirect_uri_provided: false,
         scope: scope("read"),
+        pkce: pkce(),
         status: AuthorizationCodeStatus::Redeemed {
             grant_id: gid(1),
             redeemed_at: t(3),
@@ -492,6 +494,7 @@ async fn purge_expired_deletes_only_expired_rows(store: Store) -> CaseResult {
             redirect_uri: uri("https://a.example/cb"),
             redirect_uri_provided: true,
             scope: scope("read"),
+            pkce: pkce(),
             status: AuthorizationCodeStatus::Issued,
             issued_at: t(0),
             expires_at: t(expires),
@@ -516,6 +519,7 @@ async fn purge_expired_deletes_only_expired_rows(store: Store) -> CaseResult {
             scope: scope("read"),
             state: None,
             csrf_token_hash: hash(9),
+            pkce: pkce(),
             status: AuthorizationRequestStatus::Pending,
             subject: None,
             created_at: t(0),
@@ -667,6 +671,7 @@ async fn try_redeem(store: &Store, n: u128) -> Result<bool, CaseFailure> {
             .redeem(
                 &cid("c1"),
                 Some(&uri("https://a.example/cb")),
+                &code_verifier(),
                 gid(100 + n),
                 t(1),
             )
@@ -697,6 +702,7 @@ async fn concurrent_code_redemption_has_one_winner(store: Store) -> CaseResult {
         redirect_uri: uri("https://a.example/cb"),
         redirect_uri_provided: true,
         scope: scope("read"),
+        pkce: pkce(),
         status: AuthorizationCodeStatus::Issued,
         issued_at: t(0),
         expires_at: t(600),

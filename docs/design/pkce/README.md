@@ -1,6 +1,6 @@
 # PKCE（RFC 7636）
 
-- 状態: 草案
+- 状態: 実装済み
 - 最終更新: 2026-11-24
 - 関連: [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)、[RFC 9700 §2.1.1](https://www.rfc-editor.org/rfc/rfc9700#section-2.1.1)、[OAuth 2.1 ドラフト §4.1.1 / §7.5.1](https://datatracker.ietf.org/doc/draft-ietf-oauth-v2-1/)、[認可サーバー設計書 §8 ロードマップ](../authorization-server/README.md#8-ロードマップ)
 

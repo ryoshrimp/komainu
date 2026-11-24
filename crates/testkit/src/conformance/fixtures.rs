@@ -25,6 +25,18 @@ pub(super) fn scope(s: &str) -> ScopeSet {
     ScopeSet::parse(s).unwrap()
 }
 
+pub(super) fn code_verifier() -> CodeVerifier {
+    CodeVerifier::try_new(Secret::new("a".repeat(43))).unwrap()
+}
+
+/// The S256 challenge of [`code_verifier`].
+pub(super) fn pkce() -> PkceChallenge {
+    PkceChallenge::new(
+        CodeChallenge::try_new("ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA".to_owned()).unwrap(),
+        CodeChallengeMethod::S256,
+    )
+}
+
 pub(super) fn uri(s: &str) -> RedirectUri {
     RedirectUri::try_new(s.to_owned()).unwrap()
 }

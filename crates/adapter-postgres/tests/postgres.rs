@@ -65,6 +65,67 @@ async fn migrate_upgrades_from_0001() {
 }
 
 #[tokio::test]
+async fn migrate_0003_drops_pending_codes_and_requests() {
+    let db = start_raw().await;
+    let migration = |version, name: &'static str, sql: &'static str| {
+        Migration::new(
+            version,
+            Cow::Borrowed(name),
+            MigrationType::Simple,
+            sql.into_sql_str(),
+            false,
+        )
+    };
+    Migrator::with_migrations(vec![
+        migration(1, "init", include_str!("../migrations/0001_init.sql")),
+        migration(
+            2,
+            "client_request_revocation",
+            include_str!("../migrations/0002_client_request_revocation.sql"),
+        ),
+    ])
+    .run(&db.pool)
+    .await
+    .unwrap();
+    for sql in [
+        "INSERT INTO clients (id, name, client_type, auth_method, redirect_uris, grant_types, \
+         allowed_scopes, default_scopes, skip_consent, status, created_at, updated_at) \
+         VALUES ('c1', 'n', 'public', 'none', '{}', '{}', '{}', '{}', false, 'active', now(), now())",
+        "INSERT INTO grants (id, client_id, scope, origin, origin_code_hash, status, created_at) \
+         VALUES ('00000000-0000-0000-0000-000000000001', 'c1', '{}', 'authorization_code', \
+         decode(repeat('01', 32), 'hex'), 'active', now())",
+        "INSERT INTO authorization_requests (id, client_id, redirect_uri, redirect_uri_provided, \
+         scope, csrf_token_hash, status, created_at, updated_at, expires_at) \
+         VALUES ('00000000-0000-0000-0000-000000000002', 'c1', 'https://a.example/cb', true, '{}', \
+         decode(repeat('02', 32), 'hex'), 'pending', now(), now(), now())",
+        "INSERT INTO authorization_codes (id, client_id, subject, redirect_uri, \
+         redirect_uri_provided, scope, status, grant_id, redeemed_at, issued_at, expires_at) \
+         VALUES (decode(repeat('03', 32), 'hex'), 'c1', 'alice', 'https://a.example/cb', true, \
+         '{}', 'redeemed', '00000000-0000-0000-0000-000000000001', now(), now(), now())",
+    ] {
+        sqlx::query(sql).execute(&db.pool).await.unwrap();
+    }
+    migrate(&db.pool).await.unwrap();
+    for (table, sql, expected) in [
+        (
+            "authorization_requests",
+            "SELECT count(*) AS n FROM authorization_requests",
+            0,
+        ),
+        (
+            "authorization_codes",
+            "SELECT count(*) AS n FROM authorization_codes",
+            0,
+        ),
+        ("clients", "SELECT count(*) AS n FROM clients", 1),
+        ("grants", "SELECT count(*) AS n FROM grants", 1),
+    ] {
+        let count: i64 = sqlx::query(sql).fetch_one(&db.pool).await.unwrap().get("n");
+        assert_eq!(count, expected, "{table}");
+    }
+}
+
+#[tokio::test]
 async fn audit_append_is_stored() {
     let db = start().await;
     let event = AuditEvent {
@@ -129,6 +190,13 @@ fn service(db: &TestDb) -> komainu_application::TokenService {
     TokenService::new(deps)
 }
 
+fn pkce() -> PkceChallenge {
+    PkceChallenge::new(
+        CodeChallenge::try_new("ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA".to_owned()).unwrap(),
+        CodeChallengeMethod::S256,
+    )
+}
+
 fn opaque(s: &str) -> OpaqueToken {
     OpaqueToken::try_new(Secret::new(s.to_owned())).unwrap()
 }
@@ -144,6 +212,7 @@ async fn seed_code_and_client(db: &TestDb) {
         redirect_uri: uri("https://a.example/cb"),
         redirect_uri_provided: true,
         scope: scope("read"),
+        pkce: pkce(),
         status: AuthorizationCodeStatus::Issued,
         issued_at: now,
         expires_at: now + time::Duration::minutes(10),
@@ -195,6 +264,7 @@ async fn concurrent_code_exchange_issues_tokens_once() {
                     grant_type: Some("authorization_code".to_owned()),
                     code: Some("the-code".to_owned()),
                     redirect_uri: Some("https://a.example/cb".to_owned()),
+                    code_verifier: Some("a".repeat(43)),
                     ..TokenRequest::default()
                 },
             )
@@ -296,6 +366,8 @@ async fn tokens_are_stored_hashed_only() {
                 client_id: Some(client_id.clone()),
                 redirect_uri: Some("https://a.example/cb".to_owned()),
                 scope: Some("read".to_owned()),
+                code_challenge: Some(pkce().challenge().as_inner().to_owned()),
+                code_challenge_method: Some("S256".to_owned()),
                 ..AuthorizeParams::default()
             },
             None,
@@ -348,6 +420,7 @@ async fn tokens_are_stored_hashed_only() {
                 grant_type: Some("authorization_code".to_owned()),
                 code: Some(code.clone()),
                 redirect_uri: Some("https://a.example/cb".to_owned()),
+                code_verifier: Some("a".repeat(43)),
                 ..TokenRequest::default()
             },
         )
@@ -438,6 +511,7 @@ async fn concurrent_refresh_rotates_once() {
                 grant_type: Some("authorization_code".to_owned()),
                 code: Some("the-code".to_owned()),
                 redirect_uri: Some("https://a.example/cb".to_owned()),
+                code_verifier: Some("a".repeat(43)),
                 ..TokenRequest::default()
             },
         )

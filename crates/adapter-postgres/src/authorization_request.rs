@@ -34,6 +34,16 @@ fn from_row(row: &PgRow) -> Result<AuthorizationRequest, StoreError> {
                 col(row, "csrf_token_hash")?,
                 "authorization_requests.csrf_token_hash",
             )?,
+            pkce: PkceChallenge::new(
+                valid(
+                    CodeChallenge::try_new(col(row, "code_challenge")?),
+                    "authorization_requests.code_challenge",
+                )?,
+                valid(
+                    col::<String>(row, "code_challenge_method")?.parse(),
+                    "authorization_requests.code_challenge_method",
+                )?,
+            ),
             status: AuthorizationRequestStatus::from_str(&col::<String>(row, "status")?)
                 .map_err(|_| corrupted("authorization_requests.status"))?,
             subject,
@@ -52,7 +62,8 @@ impl AuthorizationRequestRepository for PgUnitOfWork {
         Box::pin(async move {
             let row = sqlx::query(
                 "SELECT id, client_id, redirect_uri, redirect_uri_provided, scope, state, \
-                 csrf_token_hash, status, subject, created_at, updated_at, expires_at \
+                 csrf_token_hash, code_challenge, code_challenge_method, status, subject, \
+                 created_at, updated_at, expires_at \
                  FROM authorization_requests WHERE id = $1 FOR UPDATE",
             )
             .bind(id.as_inner())
@@ -68,9 +79,9 @@ impl AuthorizationRequestRepository for PgUnitOfWork {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO authorization_requests (id, client_id, redirect_uri, \
-                 redirect_uri_provided, scope, state, csrf_token_hash, status, subject, \
-                 created_at, updated_at, expires_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                 redirect_uri_provided, scope, state, csrf_token_hash, code_challenge, \
+                 code_challenge_method, status, subject, created_at, updated_at, expires_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
             )
             .bind(r.id.as_inner())
             .bind(r.client_id.as_inner())
@@ -79,6 +90,8 @@ impl AuthorizationRequestRepository for PgUnitOfWork {
             .bind(scope_to_db(&r.scope))
             .bind(r.state.as_ref().map(|s| s.as_inner()))
             .bind(hash_to_db(&r.csrf_token_hash))
+            .bind(r.pkce.challenge().as_inner())
+            .bind(r.pkce.method().as_str())
             .bind(r.status.as_str())
             .bind(r.subject.as_ref().map(|s| s.as_inner()))
             .bind(r.created_at)
@@ -97,7 +110,8 @@ impl AuthorizationRequestRepository for PgUnitOfWork {
             let done = sqlx::query(
                 "UPDATE authorization_requests SET client_id = $2, redirect_uri = $3, \
                  redirect_uri_provided = $4, scope = $5, state = $6, csrf_token_hash = $7, \
-                 status = $8, subject = $9, created_at = $10, updated_at = $11, expires_at = $12 \
+                 code_challenge = $8, code_challenge_method = $9, status = $10, subject = $11, \
+                 created_at = $12, updated_at = $13, expires_at = $14 \
                  WHERE id = $1",
             )
             .bind(r.id.as_inner())
@@ -107,6 +121,8 @@ impl AuthorizationRequestRepository for PgUnitOfWork {
             .bind(scope_to_db(&r.scope))
             .bind(r.state.as_ref().map(|s| s.as_inner()))
             .bind(hash_to_db(&r.csrf_token_hash))
+            .bind(r.pkce.challenge().as_inner())
+            .bind(r.pkce.method().as_str())
             .bind(r.status.as_str())
             .bind(r.subject.as_ref().map(|s| s.as_inner()))
             .bind(r.created_at)

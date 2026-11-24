@@ -45,6 +45,13 @@ mod test_support {
                 scope: scopes("read write"),
                 state: None,
                 csrf_token_hash: TokenHash::from_bytes([1; 32]),
+                pkce: PkceChallenge::new(
+                    CodeChallenge::try_new(
+                        "ZtNPunH49FD35FWYhT5Tv8I7vRKQJ8uxMaL0_9eHjNA".to_owned(),
+                    )
+                    .unwrap(),
+                    CodeChallengeMethod::S256,
+                ),
             },
             t0(),
             Duration::seconds(600),
