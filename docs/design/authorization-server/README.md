@@ -1,7 +1,7 @@
 # komainu 認可サーバー（RFC 6749 コア）設計書
 
 - 状態: 草案
-- 最終更新: 2026-11-22
+- 最終更新: 2026-11-24
 - 関連: [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749)、[ddd-toolkit](https://github.com/ryoshrimp/ddd-toolkit)（0.5.0 時点）
 
 ## 1. 概要
@@ -402,3 +402,17 @@ graph LR
 | Q-8 | パスワード変更時のセッションと Grant の扱い | `set_user_password` は既存のログインセッションも Grant も失効させない | ユーザー・運用を始める前 |
 | Q-9 | 認可エンドポイントでの `StoreError` | リダイレクトしてよい段階でも `500` のエラー画面にする（§4.1.2.1 の `server_error` / `temporarily_unavailable` のリダイレクトは使わない） | ユーザー・OSS 公開前 |
 | Q-10 | リバースプロキシ越しのクライアント IP | `X-Forwarded-For` は見ず、接続元の IP を監査に記録する（信頼するプロキシの設定が要るため） | ユーザー・運用を始める前 |
+
+## 8. ロードマップ
+
+RFC 6749 コアの後に足していく機能の順番。上から順に進める。
+
+| 順番 | 内容 | 状態 |
+|---|---|---|
+| 済 | トークン失効エンドポイント（RFC 7009）。[設計書](../token-revocation/README.md) | 0.1.0-alpha.2 で実装済み |
+| 済 | JOSE クレート `komainu-jose`（JWS / JWK / JWT）。[設計書](../jose/README.md) | 0.1.0-alpha.3 で実装済み |
+| 1 | PKCE（RFC 7636） | 未着手 |
+| 2 | 認可サーバーメタデータ（RFC 8414） | 未着手 |
+| 3 | JWT アサーションによるクライアント認証（`private_key_jwt`）と認可グラント（RFC 7521 / 7523）。[#19](https://github.com/ryoshrimp/komainu/issues/19) | 未着手。決定事項は Issue に記載 |
+| 未定 | JWT アクセストークン（RFC 9068）、OIDC、Introspection（RFC 7662）、Dynamic Client Registration（RFC 7591） | 順番は未定 |
+| 保留 | SAML 2.0 アサーション（RFC 7522） | 保留。XML 署名の検証が要るため。需要が出たら RFC 7521 の共通部分に足す |
