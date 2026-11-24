@@ -11,6 +11,14 @@ a breaking change bumps the minor version.
 
 ### Added
 
+- Authorization server metadata ([RFC 8414](https://www.rfc-editor.org/rfc/rfc8414)) at
+  `GET /.well-known/oauth-authorization-server`, built from `server.public_base_url` and the
+  configuration.
+- `ServerCapabilities` (with `ResponseType` and `ResponseMode`) in `komainu-application`, which
+  lists what the server supports, and `TokenService::server_capabilities`.
+- `AuthorizationServerMetadata` in `komainu-http`, the document served by the endpoint, and
+  `AppState::metadata`.
+- `Komainu::metadata`, which returns the same document for library users.
 - PKCE ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)) with the `S256` method. The
   authorization endpoint takes `code_challenge` and `code_challenge_method`, and the token
   endpoint takes `code_verifier` for the `authorization_code` grant.

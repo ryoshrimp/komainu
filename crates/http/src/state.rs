@@ -3,6 +3,7 @@ use std::sync::Arc;
 use komainu_application::{AuthorizationService, TokenService};
 
 use crate::csp::ContentSecurityPolicy;
+use crate::metadata::AuthorizationServerMetadata;
 use crate::screens::{DefaultScreens, ScreenRenderer};
 
 /// Settings of the HTTP layer.
@@ -157,21 +158,33 @@ pub struct AppState {
     pub(crate) token: TokenService,
     pub(crate) config: Arc<HttpConfig>,
     pub(crate) screens: Arc<dyn ScreenRenderer>,
+    pub(crate) metadata: Arc<AuthorizationServerMetadata>,
 }
 
 impl AppState {
     /// Creates the state with the built-in screens.
+    ///
+    /// `authorization` and `token` must be built from the same `Dependencies` (the same
+    /// `ApplicationConfig`). The published metadata is derived once, here, from the
+    /// `TokenService` configuration, which is the authority.
     pub fn new(
         authorization: AuthorizationService,
         token: TokenService,
         config: HttpConfig,
     ) -> Self {
+        let metadata = AuthorizationServerMetadata::new(&config, &token.server_capabilities());
         Self {
             authorization,
             token,
             config: Arc::new(config),
             screens: Arc::new(DefaultScreens),
+            metadata: Arc::new(metadata),
         }
+    }
+
+    /// The metadata served at `/.well-known/oauth-authorization-server`.
+    pub fn metadata(&self) -> &AuthorizationServerMetadata {
+        &self.metadata
     }
 
     /// Replaces the built-in screens with `screens`.

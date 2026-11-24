@@ -412,7 +412,8 @@ RFC 6749 コアの後に足していく機能の順番。上から順に進め�
 | 済 | トークン失効エンドポイント（RFC 7009）。[設計書](../token-revocation/README.md) | 0.1.0-alpha.2 で実装済み |
 | 済 | JOSE クレート `komainu-jose`（JWS / JWK / JWT）。[設計書](../jose/README.md) | 0.1.0-alpha.3 で実装済み |
 | 済 | PKCE（RFC 7636）。[設計書](../pkce/README.md) | 次のリリースで実装済み（Unreleased） |
-| 2 | 認可サーバーメタデータ（RFC 8414） | 未着手 |
+| 済 | 認可サーバーメタデータ（RFC 8414）。[設計書](../authorization-server-metadata/README.md) | 次のリリースで実装済み（Unreleased） |
 | 3 | JWT アサーションによるクライアント認証（`private_key_jwt`）と認可グラント（RFC 7521 / 7523）。[#19](https://github.com/ryoshrimp/komainu/issues/19) | 未着手。決定事項は Issue に記載 |
 | 未定 | JWT アクセストークン（RFC 9068）、OIDC、Introspection（RFC 7662）、Dynamic Client Registration（RFC 7591） | 順番は未定 |
 | 保留 | SAML 2.0 アサーション（RFC 7522） | 保留。XML 署名の検証が要るため。需要が出たら RFC 7521 の共通部分に足す |
+| 4 | 認可応答の `iss` パラメータ（RFC 9207）と `authorization_response_iss_parameter_supported` | 未着手 |

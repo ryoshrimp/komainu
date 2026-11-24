@@ -25,6 +25,7 @@ pub struct Harness {
     pub env: TestEnv,
     pub admin: AdminService,
     pub router: Router,
+    pub state: AppState,
 }
 
 pub struct Registered {
@@ -78,7 +79,8 @@ impl Harness {
         );
         Self {
             admin: AdminService::new(deps),
-            router: komainu_http::router(state),
+            router: komainu_http::router(state.clone()),
+            state,
             env,
         }
     }
@@ -99,7 +101,8 @@ impl Harness {
         .with_screens(screens);
         Self {
             admin: AdminService::new(deps),
-            router: komainu_http::router(state),
+            router: komainu_http::router(state.clone()),
+            state,
             env,
         }
     }

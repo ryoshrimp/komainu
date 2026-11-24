@@ -115,6 +115,23 @@ curl -u "$WEB_ID:$WEB_SECRET" -d grant_type=refresh_token -d refresh_token=REFRE
 
 ## Operations notes
 
+- `GET /.well-known/oauth-authorization-server` serves the authorization server metadata
+  (RFC 8414). The `issuer` and every endpoint URL are built from `server.public_base_url`.
+  komainu always serves the document at the path `/.well-known/oauth-authorization-server`,
+  relative to its router. If `server.public_base_url` has no path, this is the URL RFC 8414
+  defines. If it has a path (for example `https://example.com/auth`), RFC 8414 section 3.1 puts
+  the document at `/.well-known/oauth-authorization-server/auth`, so the reverse proxy must
+  forward that URL to the backend's `/.well-known/oauth-authorization-server`. This assumes the
+  proxy strips `/auth` before passing requests to the backend. With nginx:
+
+  ```nginx
+  location = /.well-known/oauth-authorization-server/auth {
+      proxy_pass http://127.0.0.1:8080/.well-known/oauth-authorization-server;
+  }
+  location /auth/ {
+      proxy_pass http://127.0.0.1:8080/;
+  }
+  ```
 - `GET /metrics` on the ops listener serves Prometheus metrics.
 - Audit events (code issued, token issued, replay detected, logins, client authentication failures,
   admin operations) are rows of the `audit_events` table. They never contain secrets.

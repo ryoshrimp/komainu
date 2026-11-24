@@ -55,6 +55,21 @@ impl Komainu {
     pub fn router(&self) -> axum::Router {
         komainu_http::router(self.state.clone())
     }
+
+    /// The RFC 8414 metadata. It is the same value the router serves at
+    /// `/.well-known/oauth-authorization-server`, and it implements
+    /// `axum::response::IntoResponse`.
+    ///
+    /// The router always serves the metadata at that path relative to where it is mounted.
+    /// When the issuer has a path and you mount the router with
+    /// `Router::nest("/auth", komainu.router())`, RFC 8414 §3.1 expects the metadata at
+    /// `/.well-known/oauth-authorization-server/auth` on the host. Route that URL to
+    /// `/auth/.well-known/oauth-authorization-server`, or add your own route that returns
+    /// this value.
+    #[cfg(feature = "http")]
+    pub fn metadata(&self) -> &komainu_http::AuthorizationServerMetadata {
+        self.state.metadata()
+    }
 }
 
 /// Collects the parts of a [`Komainu`]; see [`KomainuBuilder::build`].

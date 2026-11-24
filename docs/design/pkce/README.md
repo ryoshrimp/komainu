@@ -435,5 +435,5 @@ T2 で公開型が変わると、T3 で直すまで `komainu-domain` 以外の�
 | ID | 内容 | 仮の扱い | 決める人・時期 |
 |---|---|---|---|
 | U-1 | OIDC に対応したとき、`nonce` を使う機密クライアントに PKCE の省略を許すか | 許さない（全クライアント必須のまま） | ユーザー・OIDC のステップの前 |
-| U-2 | `code_challenge_methods_supported` の公開 | `["S256"]` を公開する想定 | ユーザー・メタデータ（RFC 8414）のステップ |
+| U-2 | `code_challenge_methods_supported` の公開 | 解消: [認可サーバーメタデータ](../authorization-server-metadata/README.md) で公開 | ユーザー・メタデータ（RFC 8414）のステップ |
 | U-3 | PKCE の検証に失敗したことを監査に残すか | 残さない（既存の `invalid_grant` と同じ） | ユーザー・OSS 公開前 |

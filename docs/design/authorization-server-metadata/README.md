@@ -1,6 +1,6 @@
 # 認可サーバーメタデータ（RFC 8414）
 
-- 状態: 設計中
+- 状態: 実装済み
 - 最終更新: 2026-11-24
 - 関連: [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414)、[認可サーバー設計書 §8 ロードマップ](../authorization-server/README.md#8-ロードマップ)、[PKCE 設計書 U-2](../pkce/README.md#7-未決事項)、[トークン失効設計書 U-2](../token-revocation/README.md#7-未決事項)、[Issue #23（公開項目の範囲の見直し）](https://github.com/ryoshrimp/komainu/issues/23)
 

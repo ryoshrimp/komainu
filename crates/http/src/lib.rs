@@ -11,6 +11,7 @@ mod cookies;
 mod csp;
 mod form;
 mod login;
+mod metadata;
 mod metrics;
 mod middleware;
 mod oauth_error;
@@ -26,6 +27,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
 pub use csp::{ContentSecurityPolicy, CspError};
+pub use metadata::AuthorizationServerMetadata;
 pub use screens::{
     ConsentScreen, DefaultScreens, ErrorKind, ErrorScreen, FormTarget, LoggedOutScreen,
     LoginErrorKind, LoginScreen, RenderError, ScreenRenderer, ScreenRequest, form_fields,
@@ -50,6 +52,10 @@ pub fn router(state: AppState) -> Router {
         .route("/logout", post(login::logout))
         .route("/token", post(token::token))
         .route("/revoke", post(revoke::revoke))
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(metadata::serve),
+        )
         .with_state(state)
         // Layers run from the last one added (outermost) to the first (innermost).
         .layer(axum::middleware::from_fn_with_state(

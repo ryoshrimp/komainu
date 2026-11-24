@@ -378,4 +378,14 @@ mod flow {
         assert_eq!(page.status, StatusCode::OK);
         assert_eq!(page.body, "<p>custom login</p>");
     }
+
+    #[tokio::test]
+    async fn metadata_matches_the_served_document() {
+        let komainu = builder().build().unwrap();
+        let reply = send(&komainu, get("/.well-known/oauth-authorization-server", "")).await;
+        assert_eq!(reply.status, StatusCode::OK);
+        let served: serde_json::Value = serde_json::from_slice(reply.body.as_bytes()).unwrap();
+        assert_eq!(served, serde_json::to_value(komainu.metadata()).unwrap());
+        assert_eq!(served["issuer"], BASE);
+    }
 }

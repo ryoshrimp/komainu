@@ -195,7 +195,10 @@ fn query(url: &Url, key: &str) -> Option<String> {
 struct Harness {
     http: Client,
     base: String,
-    ops: String,
+    /// `token_endpoint` taken from the metadata document.
+    token_endpoint: String,
+    /// `revocation_endpoint` taken from the metadata document.
+    revocation_endpoint: String,
 }
 
 impl Harness {
@@ -240,7 +243,7 @@ impl Harness {
     ) -> (StatusCode, reqwest::header::HeaderMap, serde_json::Value) {
         let mut request = self
             .http
-            .post(format!("{}/token", self.base))
+            .post(&self.token_endpoint)
             .basic_auth(client.0, Some(client.1))
             .header("content-type", "application/x-www-form-urlencoded")
             .body(form(pairs));
@@ -261,7 +264,7 @@ impl Harness {
     ) -> (StatusCode, reqwest::header::HeaderMap, String) {
         let response = self
             .http
-            .post(format!("{}/revoke", self.base))
+            .post(&self.revocation_endpoint)
             .basic_auth(client.0, Some(client.1))
             .header("content-type", "application/x-www-form-urlencoded")
             .body(form(pairs))
@@ -366,18 +369,16 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 
     let mut server = Server::start(&config_path);
-    let h = Harness {
-        http: Client::builder()
-            .cookie_store(true)
-            .redirect(Policy::none())
-            .build()
-            .unwrap(),
-        base: format!("http://{listen}"),
-        ops: format!("http://{ops}"),
-    };
+    let http = Client::builder()
+        .cookie_store(true)
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let base = format!("http://{listen}");
+    let ops_url = format!("http://{ops}");
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Ok(response) = h.http.get(format!("{}/readyz", h.ops)).send().await
+        if let Ok(response) = http.get(format!("{ops_url}/readyz")).send().await
             && response.status() == 200
         {
             break;
@@ -386,6 +387,33 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
         assert!(Instant::now() < deadline, "server did not start");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+
+    // RFC 8414: the metadata document points at the endpoints this server really serves.
+    let response = http
+        .get(format!("{base}/.well-known/oauth-authorization-server"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let metadata: serde_json::Value =
+        serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(metadata["issuer"], base.as_str());
+    let token_endpoint = text(&metadata, "token_endpoint");
+    let revocation_endpoint = text(&metadata, "revocation_endpoint");
+    assert_eq!(token_endpoint, format!("{base}/token"));
+    assert_eq!(revocation_endpoint, format!("{base}/revoke"));
+    assert!(
+        !metadata["token_endpoint_auth_methods_supported"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("none"))
+    );
+    let h = Harness {
+        http,
+        base,
+        token_endpoint,
+        revocation_endpoint,
+    };
 
     // Library access for F-4 / F-10 (verify_access_token) on the same database.
     let mut cfg = config::load(Some(&config_path)).unwrap();
