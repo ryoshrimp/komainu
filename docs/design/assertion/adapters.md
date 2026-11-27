@@ -142,7 +142,7 @@ crates/adapter-http/
   tests/fetch.rs
 ```
 
-依存: `komainu-application`、`komainu-domain`、`reqwest.workspace = true`（T5 でルートの定義を `default-features = false, features = ["rustls"]` に減らし、`cookies` はそれを使う `crates/server` の dev 依存側で足す）、`tokio = { workspace = true, features = ["net"] }`、`thiserror.workspace = true`、`tracing.workspace = true`。dev: `tokio`（`macros`, `rt-multi-thread`）、`axum`（テスト用サーバー）。ルート `Cargo.toml` の `members` と `[workspace.dependencies]` に `komainu-adapter-http = { path = "crates/adapter-http", version = "..." }` を足す（既存の adapter と同じ書き方）。
+依存: `komainu-application`、`komainu-domain`、`reqwest.workspace = true`（T5 でルートの定義を `default-features = false, features = ["rustls"]` に減らし、`cookies` はそれを使う `crates/server` の dev 依存側で足す。reqwest 0.13.5 のソースで確認済み: 本文の上限読みに使う `Response::chunk()` と、`ClientBuilder::dns_resolver` / `reqwest::dns::{Resolve, Resolving, Addrs, Name}` は feature なしで使える。`stream` は `bytes_stream()` 用なので不要、`hickory-dns` は組み込みの hickory リゾルバー用なので不要）、`tokio = { workspace = true, features = ["net"] }`、`thiserror.workspace = true`、`tracing.workspace = true`。dev: `tokio`（`macros`, `rt-multi-thread`）、`axum`（テスト用サーバー）。ルート `Cargo.toml` の `members` と `[workspace.dependencies]` に `komainu-adapter-http = { path = "crates/adapter-http", version = "..." }` を足す（既存の adapter と同じ書き方）。
 
 ### 公開インターフェース
 
@@ -185,7 +185,7 @@ impl JwksFetcher for ReqwestJwksFetcher { /* ... */ }
 2. `GET`、`Accept: application/json`。
 3. エラーの写し: タイムアウト → `Timeout`。名前解決で全アドレスが除かれた → `Forbidden`（リゾルバーのエラー型で判別）。その他の接続・TLS エラー → `Transport(エラーの表示)`。
 4. ステータスが 200 以外（3xx を含む） → `Status(code)`。
-5. `Content-Length` が `max_body_bytes` を超えていれば読まずに `TooLarge`。本文はチャンクごとに読み、累計が超えた時点で `TooLarge`。
+5. `Content-Length` が `max_body_bytes` を超えていれば読まずに `TooLarge`。本文は `Response::chunk()` をループで呼んで読み、累計が超えた時点で `TooLarge`（`bytes()` は上限なしで全部読むので使わない）。
 6. UTF-8 でなければ `Transport("invalid utf-8")`。本文を返す（JSON の検査は application）。
 
 ### `is_global(IpAddr) -> bool`（`src/ip.rs`）
@@ -237,6 +237,7 @@ adapter-http（`crates/adapter-http/tests/fetch.rs`、ローカルの axum サ�
 
 ## 実装メモ
 
-- reqwest 0.13 の `dns_resolver` が受け取る trait（`reqwest::dns::Resolve`）のシグネチャは実装時に確かめる。名前解決エラーを判別するため、リゾルバー独自のエラー型 `ForbiddenAddress` を `std::error::Error::source()` のチェーンで `downcast_ref` して探す。
+- reqwest 0.13 の `dns_resolver<R: IntoResolve>(self, resolver: R)` は `Arc<R: Resolve>` を受け取る。`trait Resolve: Send + Sync { fn resolve(&self, name: Name) -> Resolving; }`、`Resolving = Pin<Box<dyn Future<Output = Result<Addrs, Box<dyn Error + Send + Sync>>> + Send>>`、`Addrs = Box<dyn Iterator<Item = SocketAddr> + Send>`。ホスト名は `Name::as_str()`。名前解決エラーを判別するため、
+リゾルバー独自のエラー型 `ForbiddenAddress` を `std::error::Error::source()` のチェーンで `downcast_ref` して探す。
 - チェーンからたどれない場合の代替（実装者が選んでよい）: `fetch` の冒頭で自分で `tokio::net::lookup_host` し、グローバルでないアドレスが残らなければ `Forbidden` を返す。接続はリゾルバー経由のままにする（再バインド対策はリゾルバー側の除外で保つ）。どちらでも受け入れ条件「`https://localhost/` → `Forbidden`」を満たすこと。
 - `HTTPS_PROXY` などの環境変数は `no_proxy()` で無視する。

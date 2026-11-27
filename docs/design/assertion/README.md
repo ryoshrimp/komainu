@@ -1,6 +1,6 @@
 # JWT アサーション（RFC 7521 / 7523）設計書
 
-- 状態: 草案
+- 状態: 実装中（T1・T2 は実装済み）
 - 最終更新: 2026-11-27
 - 関連: [#19](https://github.com/ryoshrimp/komainu/issues/19)、[authorization-server 設計書](../authorization-server/README.md)（ロードマップ 3）、[authorization-server-metadata 設計書](../authorization-server-metadata/README.md)、[jose 設計書](../jose/README.md)、[RFC 7521](https://www.rfc-editor.org/rfc/rfc7521)、[RFC 7523](https://www.rfc-editor.org/rfc/rfc7523)
 
@@ -31,8 +31,8 @@
   - 使用済み `jti` の記録とリプレイ拒否、期限切れ記録の削除
   - メタデータ（RFC 8414）への追加、CLI、監査ログ、CHANGELOG と README
 - やらないこと
-  - SAML アサーション（RFC 7522）。保留（Q-1）
-  - 外部発行者の鍵を `jwks_uri` で取得すること。保留（Q-2）。発行者の鍵は JWKS 直接登録だけ
+  - SAML アサーション（RFC 7522）（D-1）
+  - 外部発行者の鍵を `jwks_uri` で取得すること（D-2）。発行者の鍵は JWKS 直接登録だけ
   - 自己発行アサーションのグラント（`iss` がクライアント自身）。グラントは登録済み外部発行者のものだけ受け付ける
   - `client_secret_jwt`（HS256 などの共有鍵署名）。RS256 / ES256 以外と `none` は拒否する
   - jwt-bearer グラントでのリフレッシュトークン発行
@@ -48,17 +48,17 @@
 |---|---|---|
 | F-1 | `private_key_jwt` のクライアントを登録できる | `komainu client create --name a --auth-method private_key_jwt --jwks-file keys.json --grant-type client_credentials` が成功し、シークレットは出力されない。`client show` に `auth_method: private_key_jwt` と鍵の種類（`jwks` / `jwks_uri`）が出る。`--jwks-file` と `--jwks-uri` を両方、またはどちらも指定しないと終了コード 2。秘密鍵成分（`d` など）を含む JWKS、鍵 0 個、11 個以上、パースできない JSON は終了コード 2 |
 | F-2 | `private_key_jwt` でトークンエンドポイントの認証を受けられる | `iss`=`sub`=client_id、`aud`=`https://as.example.com/token`、`exp`=今+60 秒、`jti` 付きで登録鍵（ES256）で署名した JWT を `client_assertion` に入れた `grant_type=client_credentials` 要求が 200 になる。`aud`=`https://as.example.com` でも 200。`client_id` を併記して一致すれば 200、不一致なら 400 `invalid_request` |
-| F-3 | 不正なクライアントアサーションを拒否する | 次のいずれも 401 `invalid_client`（`WWW-Authenticate` なし）になり、監査ログ `client.authentication_failed`（`method=private_key_jwt`、`reason`）が 1 件残る: 署名不一致、`alg=none` / `HS256`、`iss`≠`sub`、`aud` 不一致、`exp` 切れ（猶予 60 秒超過）、`exp` が今+300 秒より先、`jti` なし、同じ `jti` の再使用、`auth_method` が `private_key_jwt` でないクライアント、無効化済みクライアント。`client_assertion_type` が jwt-bearer の URN 以外なら 401 `invalid_client` |
+| F-3 | 不正なクライアントアサーションを拒否する | 次のいずれも 401 `invalid_client`（`WWW-Authenticate` なし）になり、監査ログ `client_authentication.failed`（`method=private_key_jwt`、`reason`）が 1 件残る: 署名不一致、`alg=none` / `HS256`、`iss`≠`sub`、`aud` 不一致、`exp` 切れ（猶予 60 秒超過）、`exp` が今+300 秒より先、`jti` なし、同じ `jti` の再使用、`auth_method` が `private_key_jwt` でないクライアント、無効化済みクライアント。`client_assertion_type` が jwt-bearer の URN 以外なら 401 `invalid_client` |
 | F-4 | 複数の認証方式の併用を拒否する | `client_assertion` と `Authorization: Basic`、または `client_assertion` と `client_secret` を同時に送ると 400 `invalid_request`。`client_assertion_type` と `client_assertion` の片方だけ、またはどちらかが 2 回出現すると 400 `invalid_request` |
 | F-5 | `jwks_uri` の鍵で認証できる | `jwks_uri` を登録したクライアントのアサーションが、取得した JWKS で検証されて 200 になる。2 回目以降の要求（1 時間以内）は再取得しない。キャッシュにない `kid` のアサーションが来たら、前回取得から 60 秒以上経っていれば 1 回だけ再取得して検証し直す |
 | F-6 | `jwks_uri` の取得を安全に制限する | 次はいずれも取得せずに失敗し、認証は 401 `invalid_client`（監査 `reason=key_fetch_failed`）: `http` スキーム（登録時に終了コード 2 で拒否）、解決先がループバック・プライベート・リンクローカル・CGNAT などグローバルでないアドレス、3xx 応答、5 秒超過、64 KiB 超の応答、200 以外 |
-| F-7 | リボケーションエンドポイントでも `private_key_jwt` が使える | `POST /revoke` に F-2 と同じ形のアサーション（`aud` はトークンエンドポイント URL か issuer）を付けると 200 になる。不正なら 401 `invalid_client` |
+| F-7 | リボケーションエンドポイントでも `private_key_jwt` が使える | `POST /revoke` に F-2 と同じ形のアサーション（`aud` はトークンエンドポイント URL か issuer）を付けると 200 になる。不正なら 401 `invalid_client`。未発行トークンの revoke を同じアサーションで 2 回送ると、2 回目は 401 `invalid_client`（監査 `reason=replay`）。`client_id` と `iss` が不一致なら 400 `invalid_request` |
 | F-8 | 外部発行者を登録・管理できる | `komainu issuer create --issuer https://idp.example.com --jwks-file idp.json --client <ID>`（`--client` は 1〜100 個。0 個・101 個以上は終了コード 2）が成功する。存在しないクライアント ID は終了コード 2、登録済みの `--issuer` は終了コード 4。`issuer list` / `show` / `update` / `disable` / `enable` が動き、監査ログ `issuer.*` が残る |
 | F-9 | `sub` とユーザーを対応付けられる | `komainu issuer map-subject https://idp.example.com --subject u-123 --username alice` が成功する。未登録の発行者・ユーザーは終了コード 3。同じ `(issuer, subject)` で再実行すると対応先を上書きする。`issuer unmap-subject` で削除でき、`issuer list-subjects` で一覧できる |
 | F-10 | jwt-bearer グラントでアクセストークンを得られる | 発行者に許可されたクライアントが自分の方式で認証し、`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=<JWT>` を送ると 200 になり、`refresh_token` は含まれない。`scope` 省略時はクライアントの既定スコープ。`TokenService::verify_access_token` の結果の `subject` は対応付けたユーザーになる |
 | F-11 | 不正なグラントアサーションを拒否する | 次はいずれも 400 `invalid_grant` で、監査ログ `assertion.rejected`（`issuer_presented`、`client_id`、`reason`）が 1 件残る: 未登録・無効化済みの `iss`、発行者がそのクライアントを許可していない、署名・`aud`・`exp`・`jti` の不備（F-3 と同じ規則）、同じ `(iss, jti)` の再使用、`sub` の対応付けがない、対応先ユーザーが無効。`assertion` がないと 400 `invalid_request`。クライアントの `grant_types` に jwt-bearer がないと 400 `unauthorized_client` |
 | F-12 | メタデータで対応を公開する | `GET /.well-known/oauth-authorization-server` の `token_endpoint_auth_methods_supported` と `revocation_endpoint_auth_methods_supported` に `private_key_jwt` が、`grant_types_supported` に jwt-bearer の URN が含まれ、`token_endpoint_auth_signing_alg_values_supported` と `revocation_endpoint_auth_signing_alg_values_supported` が `["RS256","ES256"]` になる |
-| F-13 | 使用済み `jti` の記録が掃除される | `exp`+60 秒を過ぎ、さらに `cleanup.grace_secs` を過ぎた記録は、定期掃除（`MaintenanceService::purge`）で削除され、`PurgeCounts::used_assertions` に件数が出る |
+| F-13 | 使用済み `jti` の記録が掃除される | `exp`+60 秒を過ぎ、さらに `cleanup.grace_secs` を過ぎた記録は、定期掃除（`MaintenanceService::purge_expired`）で削除され、`PurgeCounts::used_assertions` に件数が出る |
 
 ### 2.4 非機能要件
 
@@ -67,8 +67,8 @@
 | N-1 | セキュリティ: SSRF | `jwks_uri` の接続先は DNS 解決後の全アドレスがグローバルユニキャストであること。DNS 応答のうち禁止アドレスは接続に使わない（再バインド対策）。プロキシ環境変数を使わず、リダイレクトに従わない | `crates/adapter-http/tests/fetch.rs` |
 | N-2 | セキュリティ: リプレイ | 同じ `(種別, 発行者, jti)` は記録が残っている間 2 回目を必ず拒否する。同時に 2 要求が来ても成功は 1 つだけ（DB の主キーで保証） | `crates/testkit` の conformance（PostgreSQL の同時実行テストを含む）、`crates/application/tests/token.rs` |
 | N-3 | セキュリティ: 秘匿 | `client_assertion` と `assertion` の値はログ・監査・`Debug` 出力に出さない | `TokenRequest` / `ClientAuthentication` の `Debug` のテスト |
-| N-4 | 性能 | JWKS 直接登録とキャッシュ命中時、アサーション検証は外部通信なし。`jwks_uri` の取得は 1 回最大 5 秒（DB トランザクションを開いたまま待つ。Q-5） | テストのフェイク fetcher の呼び出し回数 |
-| N-5 | 互換性 | 既存の `client_secret_basic` / `client_secret_post` / `none` と既存 3 グラントの振る舞い・既存テストを変えない | 既存テストがそのまま通る |
+| N-4 | 性能 | JWKS 直接登録とキャッシュ命中時、アサーション検証は外部通信なし。`jwks_uri` の取得は 1 回最大 5 秒（DB トランザクションを開いたまま待つ。D-5） | テストのフェイク fetcher の呼び出し回数 |
+| N-5 | 互換性 | 既存の `client_secret_basic` / `client_secret_post` / `none` と既存 3 グラントの振る舞い・既存テストを変えない。例外: facade（`komainu`）は `http` feature があると `ApplicationConfig::issuer` を `public_base_url` から自動で設定するため、既存の埋め込み利用者でもメタデータに `private_key_jwt` などの項目が増える（無効化する API は作らない） | 既存テストがそのまま通る |
 
 ### 2.5 前提と制約
 
@@ -142,6 +142,19 @@ sequenceDiagram
 1. http は通常どおりクライアント認証情報と `grant_type`・`assertion`・`scope` を渡す。
 2. `TokenService::exchange` はクライアント認証（どの方式でもよい。Public は不変条件で jwt-bearer を持てない）→ `supports_grant(JwtBearer)` → `assertion` を `peek_unverified` して `iss` で `trusted_issuers().find` → 有効か・クライアントを許可しているか → 発行者の JWKS で `verify_assertion` → `AssertionSubjectResolver::resolve` で `UserId` → ユーザーが有効か → `used_assertions().record(AuthorizationGrant, iss, jti)` → `client.resolve_scope(scope)` → `Grant::for_jwt_bearer` → `issue_tokens(refresh = false)` → 監査 `token.issued` → commit。
 
+### 3.3 設計判断の記録
+
+2026-11-27 に ryoshrimp が確定した。
+
+| ID | 判断 | 理由・見直す条件 |
+|---|---|---|
+| D-1 | SAML（RFC 7522）は扱わない。共通検証は JWT 専用に作る | 要望がない。必要になれば別の設計書で扱う |
+| D-2 | 外部発行者の鍵は JWKS の直接登録だけ。`jwks_uri` は使わない | 発行者は運用者が登録するので鍵の更新も CLI で足りる。`JwksResolver` は発行者にも使える形にしておき、要望が出たら足す |
+| D-3 | 後続の処理で失敗した要求では `jti` の記録もロールバックされ、同じアサーションを有効期限内（最大 5 分）に再送できる。例外として、Assertion で認証した `revoke` は、トークンをパースできない・見つからない・grant がすでに無効で `Ok(())` を返す場合も常に commit し、`jti` の記録を残す | 失敗した要求ではトークンが出ていない。記録を別トランザクションで先に確定する方式は採らない。revoke は成功応答（200）を返すので、記録を残さないと同じアサーションを何度でも使える |
+| D-4 | `client update` で `client_secret_*` と `private_key_jwt` を相互に切り替えられない（`AdminError::Invalid`） | 鍵とシークレットの付け替えで中途半端な状態を作らない。新しいクライアントを登録してもらう |
+| D-5 | `jwks_uri` の取得（1 回最大 5 秒）は DB トランザクションを開いたまま待つ | キャッシュ命中時は通信せず、未知の `kid` による再取得も 60 秒に 1 回に抑えられる。接続プール枯渇が問題になれば、クライアント読み出しと鍵取得をトランザクションの外に出す |
+| D-6 | `jwks_uri` の取得に失敗したとき、期限切れのキャッシュは使わない（`invalid_client`） | 失効させた鍵を使い続けないよう、失敗時は閉じる側に倒す |
+
 ## 4. コンポーネント間の契約
 
 各契約の詳細（シグネチャ・エラー）はコンポーネント別ファイルにあり、ここは境界の一覧。
@@ -195,6 +208,7 @@ PR はタスクごとに分ける。T6 で `private_key_jwt` が単独でリリ�
 
 ### T1. jose: 複数 aud と未検証読み取り
 
+- 状態: 実装済み（#43）
 - 依存: なし
 - 対象: `crates/jose/src/jwt.rs`、`crates/jose/src/lib.rs`
 - 内容: `Validation::accept_audience` と `jwt::peek_unverified` を追加する（[application.md §jose への追加](application.md#jose-への追加)）。F-2、F-3 の前提
@@ -203,6 +217,7 @@ PR はタスクごとに分ける。T6 で `private_key_jwt` が単独でリリ�
 
 ### T2. domain: 認証方式・鍵・外部発行者の型
 
+- 状態: 実装済み（#45）
 - 依存: なし
 - 対象: `crates/domain/src/client/client.rs`、`crates/domain/src/token/grant.rs`、新規 `crates/domain/src/issuer/{mod.rs,issuer.rs,subject.rs}`、新規 `crates/domain/src/shared/jwks.rs`、`crates/domain/src/lib.rs`
 - 内容: [domain.md](domain.md) のすべて。F-1、F-8、F-9、F-10 の前提。あわせて、ワークスペース全体のコンパイルを通す最小限の変更: 既存の `NewClient` / `ClientRecord` / `ClientUpdate` のリテラルに `keys: None`（`crates/application/src/admin/mod.rs`、`crates/application/tests/admin.rs`、`crates/testkit/src/store.rs`、`crates/testkit/src/conformance/fixtures.rs`、`crates/adapter-postgres/src/client.rs`、`crates/adapter-postgres/tests/common/mod.rs`、`crates/server/src/cli/client.rs`）と、新バリアントの `match` 腕（[domain.md §実装メモ](domain.md#実装メモ)）
@@ -212,7 +227,7 @@ PR はタスクごとに分ける。T6 で `private_key_jwt` が単独でリリ�
 ### T3. 永続化: port・マイグレーション・インメモリ実装
 
 - 依存: T2
-- 対象: `crates/application/src/port/{repository.rs,store.rs,mod.rs}`、新規 `crates/adapter-postgres/migrations/0004_assertion.sql`、`crates/adapter-postgres/src/{client.rs,grant.rs,purge.rs,uow.rs,lib.rs}`、新規 `crates/adapter-postgres/src/{trusted_issuer.rs,subject_mapping.rs,used_assertion.rs}`、`crates/testkit/src/store.rs`、`crates/testkit/src/conformance/{cases.rs,fixtures.rs}`、`crates/server/src/cleanup.rs`（`PurgeCounts::used_assertions` をメトリクス `komainu_cleanup_deleted_total{kind="used_assertions"}` と `tracing::info!` に足す）
+- 対象: `crates/application/src/port/{repository.rs,store.rs,mod.rs}`、新規 `crates/adapter-postgres/migrations/0004_assertion.sql`、`crates/adapter-postgres/src/{client.rs,grant.rs,purge.rs,uow.rs,lib.rs}`、新規 `crates/adapter-postgres/src/{trusted_issuer.rs,subject_mapping.rs,used_assertion.rs}`、`crates/testkit/src/store.rs`、`crates/testkit/src/conformance/{cases.rs,fixtures.rs}`、`impl UnitOfWork` がある `crates/testkit/tests/in_memory_conformance.rs`（`BrokenUow`。ほかの実装は `crates/testkit/src/store.rs` と `crates/adapter-postgres/src/uow.rs` だけ）、`PurgeCounts` のリテラルがある `crates/testkit/src/conformance/cases.rs`・`crates/testkit/src/store.rs`・`crates/adapter-postgres/src/purge.rs`（`crates/testkit/src/store.rs` の `..PurgeCounts::default()` は変更不要）、`crates/server/src/cleanup.rs`（`PurgeCounts::used_assertions` をメトリクス `komainu_cleanup_deleted_total{kind="used_assertions"}` と `tracing::info!` に足す）
 - 内容: [application.md §port](application.md#port) のうち `TrustedIssuerRepository`・`SubjectMappingRepository`・`UsedAssertionRepository`・`AssertionKind`・`UsedAssertion`・`RecordOutcome`、`UnitOfWork` への 3 メソッド追加、`PurgeCounts::used_assertions`。[adapters.md](adapters.md) の adapter-postgres・testkit の store と conformance（`StaticJwksFetcher` は T4）。F-13、N-2
 - 完了条件: adapters.md §受け入れ条件の conformance ケースがインメモリと PostgreSQL の両方で通る
 - 検証: `cargo test --workspace`、`cargo test -p komainu-adapter-postgres --features pg-tests`
@@ -236,34 +251,29 @@ PR はタスクごとに分ける。T6 で `private_key_jwt` が単独でリリ�
 ### T6. private_key_jwt の組み込み
 
 - 依存: T4、T5
-- 対象: `crates/application/src/token/{mod.rs,request.rs}`、`crates/application/src/admin/{mod.rs,error.rs}`、`crates/application/src/audit.rs`、`crates/application/src/capabilities.rs`、`crates/http/src/{form.rs,client_auth.rs,metadata.rs}`、`crates/komainu/{Cargo.toml,src/builder.rs,src/lib.rs}`、`RegisterClient` のリテラルに `keys` を足す `crates/komainu/examples/{minimal.rs,custom_screens.rs}`・`crates/komainu/tests/builder.rs`・`crates/application/tests/common/mod.rs`・`crates/http/tests/common/mod.rs`・`crates/adapter-postgres/tests/postgres.rs`、`crates/server/src/{wiring.rs,cli/client.rs,cli/output.rs}`、テスト `crates/application/tests/{token.rs,revocation.rs,admin.rs,capabilities.rs}`、`crates/http/tests/{token.rs,revoke.rs,metadata.rs}`、`crates/server/tests/cli.rs`
-- 内容: クライアント認証の `Assertion` 分岐、クライアント登録・更新の鍵、メタデータの `private_key_jwt` と署名 alg（`grant_types` に `JwtBearer` はまだ入れない）、facade と server の配線、`client create/update` の CLI。F-1〜F-7、F-12 の `private_key_jwt` 部分、N-3、N-5
+- 対象: `crates/application/src/token/{mod.rs,request.rs}`、`crates/application/src/admin/{mod.rs,error.rs}`、`crates/application/src/audit.rs`、`crates/application/src/capabilities.rs`、`crates/http/src/{form.rs,client_auth.rs,metadata.rs}`、`crates/komainu/{Cargo.toml,src/builder.rs,src/lib.rs}`（`crates/server/Cargo.toml` は `komainu.workspace = true` で既定 feature を取り込むので、`jwks-uri` は自動で有効になり変更不要）、`RegisterClient` のリテラルに `keys` を足す `crates/komainu/examples/{minimal.rs,custom_screens.rs}`・`crates/komainu/tests/builder.rs`・`crates/application/tests/common/mod.rs`・`crates/http/tests/common/mod.rs`・`crates/adapter-postgres/tests/postgres.rs`、`crates/server/src/{wiring.rs,cli/client.rs,cli/output.rs,cli/mod.rs}`（`cli/mod.rs` は網羅 match の `admin_exit` に `AdminError::InvalidJwks` を足す）、テスト `crates/application/tests/{token.rs,revocation.rs,admin.rs,capabilities.rs}`、`crates/http/tests/{token.rs,revoke.rs,metadata.rs}`、`crates/server/tests/cli.rs`
+- 内容: クライアント認証の `Assertion` 分岐、`revoke` の変更（Assertion 認証時は早期 return でも commit する。D-3 の例外。match に `TokenError::InvalidRequest => RevocationError::InvalidRequest` を足す）、`AdminError::InvalidJwks`、クライアント登録・更新の鍵（`register_client` のシークレット生成を `ClientSecretBasic` / `ClientSecretPost` のときだけにする）、
+メタデータの `private_key_jwt` と署名 alg（`grant_types` に `JwtBearer` はまだ入れない）、facade と server の配線、`client create/update` の CLI。F-1〜F-7、F-12 の `private_key_jwt` 部分、N-3、N-5
 - 完了条件: F-1〜F-7 の受け入れ条件がテストで確かめられる。既存テストが通る
-- 検証: `cargo test --workspace`、`cargo clippy --workspace --all-targets --features pg-tests -- -D warnings`
+- 検証: `cargo test --workspace --features pg-tests`、`cargo clippy --workspace --all-targets --features pg-tests -- -D warnings`（`.github/workflows/ci.yml` と同じ。`pg-tests` は `komainu-adapter-postgres` と `komainu-server` にある）
 
 ### T7. jwt-bearer グラントと外部発行者の管理
 
 - 依存: T4、T6
 - 対象: `crates/application/src/token/mod.rs`、`crates/application/src/admin/{mod.rs,issuer.rs,error.rs}`、`crates/application/src/audit.rs`、`crates/application/src/capabilities.rs`、`crates/http/src/token.rs`（メトリクスラベル）、新規 `crates/server/src/cli/issuer.rs`、`crates/server/src/cli/{mod.rs,output.rs}`、`crates/server/src/lib.rs`、テスト `crates/application/tests/{token.rs,admin.rs,capabilities.rs}`、`crates/http/tests/{token.rs,metadata.rs}`、`crates/server/tests/{cli.rs,e2e_scenario.rs}`
-- 内容: jwt-bearer グラント、`AdminService` の issuer 系、`komainu issuer` CLI、メタデータの `grant_types_supported`。F-8〜F-12
+- 内容: jwt-bearer グラント（拒否監査は `Step::Rejected`）、`AdminError::UnknownClient`、`grant_type_label` への jwt-bearer 追加、`AdminService` の issuer 系、`komainu issuer` CLI、メタデータの `grant_types_supported`。F-8〜F-12
 - 完了条件: F-8〜F-12 の受け入れ条件がテストで確かめられる。e2e シナリオに「issuer 登録 → map-subject → jwt-bearer でトークン取得 → verify_access_token」が加わる
-- 検証: `cargo test --workspace --features pg-tests`
+- 検証: `cargo test --workspace --features pg-tests`、`cargo clippy --workspace --all-targets --features pg-tests -- -D warnings`（`.github/workflows/ci.yml` と同じ）
 
 ### T8. ドキュメント
 
 - 依存: T7
 - 対象: `README.md`（What is supported、CLI 例）、`CHANGELOG.md`（Unreleased）、`docs/design/authorization-server/README.md`（ロードマップ 3 を「実装済み」に）、`docs/design/authorization-server/server.md`（CLI の章に `issuer` と `client` の新オプション）、本書の状態
-- 内容: 利用者向けの説明と破壊的変更の記載（`ClientAuthentication` / `TokenEndpointAuthMethod` / `GrantType` / `GrantOrigin` / `PurgeCounts` / `ServerCapabilities` への追加）
+- 内容: 利用者向けの説明と破壊的変更の記載（`ClientAuthentication` / `TokenEndpointAuthMethod` / `GrantType` / `GrantOrigin` / `PurgeCounts` / `ServerCapabilities` / `UnitOfWork` / `AdminError` への追加）、facade 利用時のメタデータの追加項目（`http` feature では issuer が自動設定され、`private_key_jwt` と署名 alg が増える。N-5）
+
 - 完了条件: 上記ファイルに F-1〜F-13 の利用方法と破壊的変更が書かれている
 - 検証: 目視、`cargo test --workspace --doc`
 
 ## 7. 未決事項
 
-| ID | 内容 | 仮の扱い | 決める人・時期 |
-|---|---|---|---|
-| Q-1 | SAML（RFC 7522）をいつ扱うか | やらない。共通検証は JWT 専用に作る | ryoshrimp、本機能のリリース後 |
-| Q-2 | 外部発行者の鍵に `jwks_uri` を許すか | JWKS 直接登録だけ。`JwksResolver` は発行者にも使える形にしておく | ryoshrimp、利用者の要望が出たとき |
-| Q-3 | 後続の処理で失敗した要求では `jti` の記録がロールバックされ、同じアサーションを 5 分以内に再送できる | 許容する。失敗した要求ではトークンが出ていないため。記録を別トランザクションで先に確定する方式は採らない | ryoshrimp、T6 のレビュー時 |
-| Q-4 | `client update` で `client_secret_*` と `private_key_jwt` を相互に切り替えられるようにするか | 切り替え不可（`AdminError::Invalid`）。新しいクライアントを登録してもらう | ryoshrimp、T6 のレビュー時 |
-| Q-5 | `jwks_uri` の取得（最大 5 秒）を DB トランザクションを開いたまま待つ | 許容する。キャッシュ命中時は通信しない。接続プール枯渇が問題になれば、クライアント読み出しと鍵取得をトランザクションの外に出す | ryoshrimp、負荷試験の結果次第 |
-| Q-6 | `jwks_uri` の取得に失敗したとき、期限切れのキャッシュを使うか | 使わない（失敗として `invalid_client`） | ryoshrimp、T5 のレビュー時 |
+なし（旧 Q-1〜Q-6 は 2026-11-27 に確定し、[§3.3 設計判断の記録](#33-設計判断の記録)に移した）。
