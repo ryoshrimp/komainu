@@ -89,6 +89,7 @@ pub struct Claims<T = NoCustomClaims> {
 pub struct Validation {
     issuer: String,
     audience: String,
+    extra_audiences: Vec<String>,
     leeway: Duration,
     typ: Option<String>,
     max_token_len: usize,
@@ -101,10 +102,18 @@ impl Validation {
         Self {
             issuer: issuer.into(),
             audience: audience.into(),
+            extra_audiences: Vec::new(),
             leeway: DEFAULT_LEEWAY,
             typ: None,
             max_token_len: DEFAULT_MAX_TOKEN_LEN,
         }
+    }
+
+    /// Accepts `audience` in addition to the one given to [`Validation::new`]. `aud` passes if
+    /// it contains any of them.
+    pub fn accept_audience(mut self, audience: impl Into<String>) -> Self {
+        self.extra_audiences.push(audience.into());
+        self
     }
 
     /// Sets the clock skew allowance. Sub-second parts are dropped; more than [`MAX_LEEWAY`]
@@ -247,6 +256,33 @@ fn audience_claim(map: &mut Map<String, Value>) -> Result<Option<Audience>, Jose
     }
 }
 
+fn registered_claims(map: &mut Map<String, Value>) -> Result<RegisteredClaims, JoseError> {
+    Ok(RegisteredClaims {
+        iss: string_claim(map, "iss")?,
+        sub: string_claim(map, "sub")?,
+        aud: audience_claim(map)?,
+        exp: time_claim(map, "exp")?,
+        nbf: time_claim(map, "nbf")?,
+        iat: time_claim(map, "iat")?,
+        jti: string_claim(map, "jti")?,
+    })
+}
+
+/// Reads the registered claims of a JWT **without verifying anything**: not the signature, not
+/// the header, and not `iss`, `aud` or the times.
+///
+/// Use it only to decide which key to verify with. The result must not be trusted; verify the
+/// token with [`decode`] before relying on any claim.
+///
+/// Fails with `Malformed` if the token is longer than `max_token_len`, does not have three
+/// segments with a non-empty header and signature, or has invalid base64url or JSON, and with
+/// `InvalidClaim` if a registered claim has the wrong type.
+pub fn peek_unverified(token: &str, max_token_len: usize) -> Result<RegisteredClaims, JoseError> {
+    let segments = jws::split(token, max_token_len)?;
+    let mut map = json::parse_object(&segments.payload, Kind::Claims)?;
+    registered_claims(&mut map)
+}
+
 /// Verifies a JWT and checks its claims against `validation` at `now`.
 pub fn decode<T: DeserializeOwned>(
     token: &str,
@@ -264,15 +300,7 @@ pub fn decode<T: DeserializeOwned>(
     }
     let mut map = json::parse_object(&verified.payload, Kind::Claims)?;
 
-    let registered = RegisteredClaims {
-        iss: string_claim(&mut map, "iss")?,
-        sub: string_claim(&mut map, "sub")?,
-        aud: audience_claim(&mut map)?,
-        exp: time_claim(&mut map, "exp")?,
-        nbf: time_claim(&mut map, "nbf")?,
-        iat: time_claim(&mut map, "iat")?,
-        jti: string_claim(&mut map, "jti")?,
-    };
+    let registered = registered_claims(&mut map)?;
     let custom =
         T::deserialize(Value::Object(map)).map_err(|_| JoseError::InvalidClaim("custom claims"))?;
 
@@ -286,7 +314,13 @@ pub fn decode<T: DeserializeOwned>(
     }
     match &registered.aud {
         None => return Err(JoseError::MissingClaim("aud")),
-        Some(aud) if !aud.contains(&validation.audience) => return Err(JoseError::InvalidAudience),
+        Some(aud)
+            if !std::iter::once(&validation.audience)
+                .chain(&validation.extra_audiences)
+                .any(|accepted| aud.contains(accepted)) =>
+        {
+            return Err(JoseError::InvalidAudience);
+        }
         Some(_) => {}
     }
     let Some(exp) = registered.exp else {
@@ -788,5 +822,58 @@ mod tests {
         assert!(!Audience::One("a".into()).contains("b"));
         assert!(Audience::Many(vec!["a".into(), "b".into()]).contains("b"));
         assert!(!Audience::Many(vec![]).contains("a"));
+    }
+
+    #[test]
+    fn accept_audience_adds_values() {
+        let v = validation().accept_audience("other");
+        let check = |aud: &str| {
+            let t = token(&format!(
+                r#"{{"iss":"https://as.example","aud":{aud},"exp":{T}}}"#
+            ));
+            decode::<NoCustomClaims>(&t, &[key().verifying_key()], &v, at(T - 1)).map(|_| ())
+        };
+        assert_eq!(check(r#""other""#), Ok(()));
+        assert_eq!(check(r#"["x","other"]"#), Ok(()));
+        assert_eq!(check(r#""api""#), Ok(()));
+        assert_eq!(check(r#""nope""#), Err(E::InvalidAudience));
+        assert_eq!(check(r#"["x","y"]"#), Err(E::InvalidAudience));
+    }
+
+    #[test]
+    fn peek_unverified_ignores_signature() {
+        let t = token(r#"{"iss":"i","sub":"s","aud":"nobody","exp":1}"#);
+        let (head, sig) = t.rsplit_once('.').unwrap();
+        let broken = format!("{head}.{}", "A".repeat(sig.len()));
+        assert_eq!(decode_now(&broken, T).unwrap_err(), E::InvalidSignature);
+        let r = peek_unverified(&broken, 4096).unwrap();
+        assert_eq!(r.iss.as_deref(), Some("i"));
+        assert_eq!(r.sub.as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn peek_unverified_errors_match_decode() {
+        let t = token(r#"{"iss":"i"}"#);
+        for (bad, max) in [
+            ("a.b".to_owned(), 4096),
+            ("a.b.c.d".to_owned(), 4096),
+            ("!!.!!.!!".to_owned(), 4096),
+            (t.clone(), t.len() - 1),
+        ] {
+            let v = validation().max_token_len(max);
+            assert_eq!(
+                peek_unverified(&bad, max).unwrap_err(),
+                decode::<NoCustomClaims>(&bad, &[], &v, at(T)).unwrap_err(),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            peek_unverified(&token(r#"{"iss":1}"#), 4096).unwrap_err(),
+            E::InvalidClaim("iss")
+        );
+        assert_eq!(
+            peek_unverified(&token("{"), 4096).unwrap_err(),
+            E::Malformed("claims: syntax")
+        );
     }
 }

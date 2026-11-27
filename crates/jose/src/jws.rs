@@ -204,6 +204,37 @@ fn parse_header(bytes: &[u8]) -> Result<Header, JoseError> {
     Ok(Header { alg, kid, typ, cty })
 }
 
+/// A compact token split into segments, each base64url-decoded.
+pub(crate) struct Segments<'a> {
+    pub(crate) header_b64: &'a str,
+    pub(crate) payload_b64: &'a str,
+    pub(crate) header_bytes: Vec<u8>,
+    pub(crate) payload: Vec<u8>,
+    pub(crate) signature: Vec<u8>,
+}
+
+/// Checks the length and shape of `token` and decodes its segments. Nothing is verified.
+pub(crate) fn split(token: &str, max_token_len: usize) -> Result<Segments<'_>, JoseError> {
+    if token.len() > max_token_len {
+        return Err(JoseError::Malformed("token too long"));
+    }
+    let segments: Vec<&str> = token.split('.').collect();
+    let [header_b64, payload_b64, signature_b64] = segments[..] else {
+        return Err(JoseError::Malformed("segments"));
+    };
+    if header_b64.is_empty() || signature_b64.is_empty() {
+        return Err(JoseError::Malformed("segments"));
+    }
+    let decode = |s: &str| b64::decode(s).ok_or(JoseError::Malformed("base64url"));
+    Ok(Segments {
+        header_b64,
+        payload_b64,
+        header_bytes: decode(header_b64)?,
+        payload: decode(payload_b64)?,
+        signature: decode(signature_b64)?,
+    })
+}
+
 /// Verifies a JWS Compact string against `keys`.
 ///
 /// With a `kid` header, the first key with that kid is used. Without one, every key with the
@@ -216,21 +247,13 @@ pub fn verify(
     if let Some(typ) = &options.typ {
         check_typ(typ)?;
     }
-    if token.len() > options.max_token_len {
-        return Err(JoseError::Malformed("token too long"));
-    }
-    let segments: Vec<&str> = token.split('.').collect();
-    let [header_b64, payload_b64, signature_b64] = segments[..] else {
-        return Err(JoseError::Malformed("segments"));
-    };
-    if header_b64.is_empty() || signature_b64.is_empty() {
-        return Err(JoseError::Malformed("segments"));
-    }
-    let decode = |s: &str| b64::decode(s).ok_or(JoseError::Malformed("base64url"));
-    let header_bytes = decode(header_b64)?;
-    let payload = decode(payload_b64)?;
-    let signature = decode(signature_b64)?;
-
+    let Segments {
+        header_b64,
+        payload_b64,
+        header_bytes,
+        payload,
+        signature,
+    } = split(token, options.max_token_len)?;
     let header = parse_header(&header_bytes)?;
     if let Some(required) = &options.typ {
         match header.typ() {
