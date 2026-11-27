@@ -699,6 +699,109 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
     assert_eq!(output.status.code(), Some(0));
     assert!(verify(service_token).await.is_none());
 
+    // F-8 to F-10: register an issuer, map its subject to alice, and exchange its assertion.
+    let key = komainu_jose::SigningKey::generate_es256()
+        .unwrap()
+        .with_kid(komainu_jose::Kid::try_new("ext-key".to_owned()).unwrap());
+    let jwks_dir = std::env::temp_dir().join(format!("komainu-e2e-issuer-{}", std::process::id()));
+    std::fs::create_dir_all(&jwks_dir).unwrap();
+    let jwks_file = jwks_dir.join("jwks.json");
+    std::fs::write(
+        &jwks_file,
+        komainu_jose::JwkSet::new(vec![key.verifying_key()])
+            .unwrap()
+            .to_json(),
+    )
+    .unwrap();
+    let (bridge_id, bridge_secret) = create_client(
+        &config_path,
+        &[
+            "--name",
+            "bridge",
+            "--grant-type",
+            "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "--scope",
+            "read",
+        ],
+    );
+    let external = "https://idp.example.org";
+    for args in [
+        vec![
+            "issuer",
+            "create",
+            "--issuer",
+            external,
+            "--jwks-file",
+            jwks_file.to_str().unwrap(),
+            "--client",
+            &bridge_id,
+        ],
+        vec![
+            "issuer",
+            "map-subject",
+            external,
+            "--subject",
+            "ext-alice",
+            "--username",
+            "alice",
+        ],
+    ] {
+        let output = common::run(&config_path, &args, None);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+    }
+    std::fs::remove_dir_all(jwks_dir).ok();
+    let assertion = komainu_jose::jwt::encode(
+        &komainu_jose::jwt::Claims {
+            registered: komainu_jose::jwt::RegisteredClaims {
+                iss: Some(external.to_owned()),
+                sub: Some("ext-alice".to_owned()),
+                aud: Some(komainu_jose::jwt::Audience::One(h.base.clone())),
+                exp: Some(time::OffsetDateTime::now_utc() + time::Duration::seconds(240)),
+                nbf: None,
+                iat: None,
+                jti: Some("e2e-assertion-1".to_owned()),
+            },
+            custom: komainu_jose::jwt::NoCustomClaims,
+        },
+        &key,
+        &komainu_jose::jws::SignOptions::new(),
+    )
+    .unwrap();
+    let (status, _, body) = h
+        .token(
+            (&bridge_id, &bridge_secret),
+            &[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                ("assertion", &assertion),
+                ("scope", "read"),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.get("refresh_token").is_none());
+    let bridge_token = text(&body, "access_token");
+    let info = verify(bridge_token).await.expect("valid access token");
+    let alice_id: (String,) = sqlx::query_as("SELECT id::text FROM users WHERE username = 'alice'")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(info.subject.unwrap().as_inner(), &alice_id.0);
+    // The same assertion cannot be used twice.
+    let (status, _, body) = h
+        .token(
+            (&bridge_id, &bridge_secret),
+            &[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                ("assertion", &assertion),
+                ("scope", "read"),
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"], "invalid_grant");
+
     // F-12: one audit row per event kind, and no secret inside any row (N-3).
     let rows: Vec<(String, i64)> =
         sqlx::query_as("SELECT kind, count(*) FROM audit_events GROUP BY kind")
@@ -719,6 +822,9 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
         "refresh_token.replay_detected",
         "token.issued",
         "client_authentication.failed",
+        "issuer.registered",
+        "issuer.subject_mapped",
+        "assertion.rejected",
     ] {
         assert!(
             audit.get(kind).copied().unwrap_or(0) >= 1,
@@ -727,7 +833,7 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
     }
     // Counts follow from the scenario above.
     for (kind, count) in [
-        ("client.registered", 3),
+        ("client.registered", 4),
         ("client.disabled", 1),
         ("user.created", 1),
         ("login.failed", 1),
@@ -742,8 +848,12 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
         // the revocation endpoint revokes the quiet client's grant.
         ("grant.revoked", 4),
         ("client_authentication.failed", 1),
-        // Three code exchanges, one refresh and the client credentials call.
-        ("token.issued", 5),
+        ("issuer.registered", 1),
+        ("issuer.subject_mapped", 1),
+        // The replayed assertion.
+        ("assertion.rejected", 1),
+        // Three code exchanges, one refresh, the client credentials call and the jwt-bearer call.
+        ("token.issued", 6),
     ] {
         assert_eq!(audit.get(kind).copied(), Some(count), "{kind}: {audit:?}");
     }

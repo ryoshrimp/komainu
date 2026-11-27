@@ -22,7 +22,12 @@ const AUTH_METHODS: [&str; 4] = [
     "private_key_jwt",
     "none",
 ];
-const GRANT_TYPES: [&str; 3] = ["authorization_code", "client_credentials", "refresh_token"];
+const GRANT_TYPES: [&str; 4] = [
+    "authorization_code",
+    "client_credentials",
+    "refresh_token",
+    "urn:ietf:params:oauth:grant-type:jwt-bearer",
+];
 
 #[derive(Debug, Subcommand)]
 pub enum ClientCommand {

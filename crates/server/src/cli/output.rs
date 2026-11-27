@@ -1,8 +1,8 @@
 //! Rendering of views as text or JSON.
 
 use clap::ValueEnum;
-use komainu::application::{ClientView, UserView};
-use komainu::domain::{ClientKeys, OpaqueToken};
+use komainu::application::{ClientView, IssuerView, SubjectMappingView, UserView};
+use komainu::domain::{ClientKeys, JwksDocument, OpaqueToken};
 use serde::Serialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -35,8 +35,7 @@ impl KeysJson {
     fn new(keys: &ClientKeys) -> Self {
         match keys {
             ClientKeys::Jwks(doc) => Self::Jwks {
-                jwks: serde_json::from_str(doc.as_str())
-                    .unwrap_or_else(|_| serde_json::Value::String(doc.as_str().to_owned())),
+                jwks: jwks_value(doc),
             },
             ClientKeys::JwksUri(uri) => Self::JwksUri {
                 jwks_uri: uri.as_str().to_owned(),
@@ -45,14 +44,24 @@ impl KeysJson {
     }
 }
 
+/// The registered JWKS as a JSON value (the string itself if it does not parse).
+fn jwks_value(doc: &JwksDocument) -> serde_json::Value {
+    serde_json::from_str(doc.as_str())
+        .unwrap_or_else(|_| serde_json::Value::String(doc.as_str().to_owned()))
+}
+
+fn jwks_key_count(doc: &JwksDocument) -> usize {
+    jwks_value(doc)
+        .get("keys")
+        .and_then(|k| k.as_array().map(Vec::len))
+        .unwrap_or(0)
+}
+
 /// One line of `show` text output: `keys: jwks (N keys)` or `keys: jwks_uri <URL>`.
 fn keys_line(keys: &ClientKeys) -> String {
     match keys {
         ClientKeys::Jwks(doc) => {
-            let count = serde_json::from_str::<serde_json::Value>(doc.as_str())
-                .ok()
-                .and_then(|v| v.get("keys").and_then(|k| k.as_array().map(Vec::len)))
-                .unwrap_or(0);
+            let count = jwks_key_count(doc);
             format!("keys: jwks ({count} keys)")
         }
         ClientKeys::JwksUri(uri) => format!("keys: jwks_uri {}", uri.as_str()),
@@ -115,6 +124,52 @@ impl<'a> UserJson<'a> {
             username: view.username.as_str(),
             active: view.active,
             created_at: rfc3339(view.created_at),
+            updated_at: rfc3339(view.updated_at),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct IssuerJson<'a> {
+    id: &'a str,
+    status: &'static str,
+    allowed_clients: Vec<&'a str>,
+    jwks: serde_json::Value,
+    created_at: String,
+    updated_at: String,
+}
+
+impl<'a> IssuerJson<'a> {
+    fn new(view: &'a IssuerView) -> Self {
+        Self {
+            id: view.id.as_inner(),
+            status: view.status.as_str(),
+            allowed_clients: view
+                .allowed_clients
+                .iter()
+                .map(|c| c.as_inner().as_str())
+                .collect(),
+            jwks: jwks_value(&view.jwks),
+            created_at: rfc3339(view.created_at),
+            updated_at: rfc3339(view.updated_at),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct SubjectMappingJson<'a> {
+    subject: &'a str,
+    username: &'a str,
+    user_id: String,
+    updated_at: String,
+}
+
+impl<'a> SubjectMappingJson<'a> {
+    fn new(view: &'a SubjectMappingView) -> Self {
+        Self {
+            subject: view.subject.as_inner(),
+            username: view.username.as_str(),
+            user_id: view.user_id.as_inner().hyphenated().to_string(),
             updated_at: rfc3339(view.updated_at),
         }
     }
@@ -235,6 +290,82 @@ pub fn print_user_list(format: OutputFormat, views: &[UserView]) -> Result<(), E
         OutputFormat::Text => {
             for view in views {
                 println!("{}\t{}", view.username.as_str(), status(view.active));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Prints one issuer with all its fields (`create`, `show`, `update`).
+pub fn print_issuer_details(format: OutputFormat, view: &IssuerView) -> Result<(), Exit> {
+    match format {
+        OutputFormat::Json => println!("{}", to_json(&IssuerJson::new(view))?),
+        OutputFormat::Text => {
+            let clients: Vec<&str> = view
+                .allowed_clients
+                .iter()
+                .map(|c| c.as_inner().as_str())
+                .collect();
+            println!("id: {}", view.id.as_inner());
+            println!("status: {}", view.status.as_str());
+            println!("clients: {}", clients.join(","));
+            println!("keys: {}", jwks_key_count(&view.jwks));
+            println!("created_at: {}", rfc3339(view.created_at));
+            println!("updated_at: {}", rfc3339(view.updated_at));
+        }
+    }
+    Ok(())
+}
+
+/// Prints a list of issuers: a JSON array, or one tab-separated line per issuer.
+pub fn print_issuer_list(format: OutputFormat, views: &[IssuerView]) -> Result<(), Exit> {
+    match format {
+        OutputFormat::Json => {
+            let items: Vec<_> = views.iter().map(IssuerJson::new).collect();
+            println!("{}", to_json(&items)?);
+        }
+        OutputFormat::Text => {
+            for view in views {
+                println!("{}\t{}", view.id.as_inner(), view.status.as_str());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Prints one subject mapping (`map-subject`).
+pub fn print_subject_mapping(format: OutputFormat, view: &SubjectMappingView) -> Result<(), Exit> {
+    match format {
+        OutputFormat::Json => println!("{}", to_json(&SubjectMappingJson::new(view))?),
+        OutputFormat::Text => {
+            println!("subject: {}", view.subject.as_inner());
+            println!("username: {}", view.username.as_str());
+            println!("user_id: {}", view.user_id.as_inner().hyphenated());
+            println!("updated_at: {}", rfc3339(view.updated_at));
+        }
+    }
+    Ok(())
+}
+
+/// Prints a list of subject mappings: a JSON array, or one tab-separated line per mapping.
+pub fn print_subject_mapping_list(
+    format: OutputFormat,
+    views: &[SubjectMappingView],
+) -> Result<(), Exit> {
+    match format {
+        OutputFormat::Json => {
+            let items: Vec<_> = views.iter().map(SubjectMappingJson::new).collect();
+            println!("{}", to_json(&items)?);
+        }
+        OutputFormat::Text => {
+            for view in views {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    view.subject.as_inner(),
+                    view.username.as_str(),
+                    view.user_id.as_inner().hyphenated(),
+                    rfc3339(view.updated_at)
+                );
             }
         }
     }

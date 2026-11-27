@@ -1,18 +1,20 @@
 //! Administration use cases for clients and users (used by the CLI).
 
 mod error;
+mod issuer;
 
 use std::collections::BTreeSet;
 
 use komainu_domain::{
-    Client, ClientId, ClientKeys, ClientName, ClientType, ClientUpdate, GrantType, NewClient,
-    NewPassword, OpaqueToken, RedirectUri, RevocationReason, ScopeSet, TokenEndpointAuthMethod,
-    User, UserId, Username,
+    Client, ClientId, ClientKeys, ClientName, ClientType, ClientUpdate, GrantType, JwksDocument,
+    NewClient, NewPassword, OpaqueToken, RedirectUri, RevocationReason, ScopeSet,
+    TokenEndpointAuthMethod, User, UserId, Username,
 };
 use komainu_jose::JwkSet;
 use time::OffsetDateTime;
 
 pub use error::AdminError;
+pub use issuer::{IssuerView, RegisterIssuer, SubjectMappingView};
 
 use crate::audit::AuditActor;
 use crate::context::RequestContext;
@@ -127,14 +129,19 @@ impl AdminService {
     /// A `jwks` document must hold 1 to 10 usable public keys. `jwks_uri` is not fetched here.
     fn check_keys(keys: Option<&ClientKeys>) -> Result<(), AdminError> {
         if let Some(ClientKeys::Jwks(doc)) = keys {
-            let set = JwkSet::from_json(doc.as_str())
-                .map_err(|e| AdminError::InvalidJwks(e.to_string()))?;
-            let count = set.keys().len();
-            if !(1..=10).contains(&count) {
-                return Err(AdminError::InvalidJwks(format!(
-                    "expected 1 to 10 usable keys, found {count}"
-                )));
-            }
+            Self::check_jwks(doc)?;
+        }
+        Ok(())
+    }
+
+    fn check_jwks(doc: &JwksDocument) -> Result<(), AdminError> {
+        let set =
+            JwkSet::from_json(doc.as_str()).map_err(|e| AdminError::InvalidJwks(e.to_string()))?;
+        let count = set.keys().len();
+        if !(1..=10).contains(&count) {
+            return Err(AdminError::InvalidJwks(format!(
+                "expected 1 to 10 usable keys, found {count}"
+            )));
         }
         Ok(())
     }

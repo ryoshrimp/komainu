@@ -88,6 +88,15 @@ fn issuer_adds_private_key_jwt_and_algs() {
         caps.revocation_endpoint_auth_signing_algs,
         [Algorithm::Rs256, Algorithm::Es256]
     );
+    assert_eq!(
+        caps.grant_types,
+        [
+            GrantType::AuthorizationCode,
+            GrantType::ClientCredentials,
+            GrantType::RefreshToken,
+            GrantType::JwtBearer
+        ]
+    );
     let with_public = ServerCapabilities::from_config(
         &config()
             .with_issuer("https://as.example.com")

@@ -1,4 +1,4 @@
-use komainu_domain::DomainError;
+use komainu_domain::{ClientId, DomainError};
 
 use crate::port::{PasswordHashError, StoreError};
 
@@ -17,6 +17,9 @@ pub enum AdminError {
     /// `jwks` is not a usable JWK Set (parse failure, private key, or not 1 to 10 keys).
     #[error("invalid jwks: {0}")]
     InvalidJwks(String),
+    /// `allowed_clients` of an issuer names a client that does not exist.
+    #[error("unknown client: {}", .0.as_inner())]
+    UnknownClient(ClientId),
     #[error("not found")]
     NotFound,
     /// Duplicate username.

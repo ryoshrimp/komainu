@@ -2191,6 +2191,7 @@ dependencies = [
  "clap",
  "figment",
  "komainu",
+ "komainu-jose",
  "komainu-testkit",
  "metrics",
  "metrics-exporter-prometheus",

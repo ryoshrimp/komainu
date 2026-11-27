@@ -91,6 +91,7 @@ async fn execute(cli: Cli) -> Result<(), Exit> {
         Command::Migrate => serve::run_migrate(settings).await,
         Command::Client(command) => admin(settings, AdminCommand::Client(command)).await,
         Command::User(command) => admin(settings, AdminCommand::User(command)).await,
+        Command::Issuer(command) => admin(settings, AdminCommand::Issuer(command)).await,
     }
 }
 

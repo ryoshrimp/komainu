@@ -40,6 +40,7 @@ url.workspace = true
 reqwest = { workspace = true, features = ["cookies"] }
 testcontainers-modules.workspace = true
 komainu-testkit.workspace = true
+komainu-jose.workspace = true
 sqlx.workspace = true
 
 [lints]

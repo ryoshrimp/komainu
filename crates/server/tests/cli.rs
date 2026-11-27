@@ -340,3 +340,141 @@ async fn cli_private_key_jwt_client_create_show_and_misuse() {
     );
     std::fs::remove_dir_all(dir).ok();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_issuer_lifecycle_and_exit_codes() {
+    let env = env().await;
+    let dir = std::env::temp_dir().join(format!("komainu-cli-issuer-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("jwks.json");
+    std::fs::write(&file, JWKS).unwrap();
+    let path = file.to_str().unwrap();
+    let created = env.run(&[
+        "client",
+        "create",
+        "--name",
+        "demo",
+        "--grant-type",
+        "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "--scope",
+        "read",
+    ]);
+    assert_eq!(created.status.code(), Some(0));
+    let client = field(&common::stdout(&created), "client_id").to_owned();
+    let idp = "https://idp.example.org";
+
+    // create: ok, duplicate (4), unknown client (2), no client (2), bad JWKS (2).
+    let create = |id: &str, client: &str| {
+        env.run(&[
+            "issuer",
+            "create",
+            "--issuer",
+            id,
+            "--jwks-file",
+            path,
+            "--client",
+            client,
+        ])
+    };
+    let out = create(idp, &client);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(create(idp, &client).status.code(), Some(4));
+    let unknown = "00000000-0000-7000-8000-000000000000";
+    assert_eq!(
+        create("https://idp2.example.org", unknown).status.code(),
+        Some(2)
+    );
+    let no_client = env.run(&[
+        "issuer",
+        "create",
+        "--issuer",
+        "https://idp3.example.org",
+        "--jwks-file",
+        path,
+    ]);
+    assert_eq!(no_client.status.code(), Some(2));
+    let bad = dir.join("bad.json");
+    std::fs::write(&bad, "not json").unwrap();
+    let bad_jwks = env.run(&[
+        "issuer",
+        "create",
+        "--issuer",
+        "https://idp4.example.org",
+        "--jwks-file",
+        bad.to_str().unwrap(),
+        "--client",
+        &client,
+    ]);
+    assert_eq!(bad_jwks.status.code(), Some(2));
+    assert_eq!(env.audit("issuer.registered").await.0, 1);
+    // 101 allowed clients exceed the limit of 100.
+    let mut many = vec![
+        "issuer",
+        "create",
+        "--issuer",
+        "https://idp5.example.org",
+        "--jwks-file",
+        path,
+    ];
+    let ids: Vec<String> = (0..101)
+        .map(|i| format!("00000000-0000-7000-8000-{i:012}"))
+        .collect();
+    for id in &ids {
+        many.extend(["--client", id]);
+    }
+    assert_eq!(env.run(&many).status.code(), Some(2));
+
+    // show / list.
+    let shown = common::stdout(&env.run(&["issuer", "show", idp]));
+    assert_eq!(field(&shown, "status"), "active");
+    assert_eq!(field(&shown, "clients"), client);
+    assert_eq!(field(&shown, "keys"), "1");
+    let json = common::stdout(&env.run(&["issuer", "show", idp, "--output", "json"]));
+    assert!(json.contains("\"allowed_clients\""), "{json}");
+    assert!(common::stdout(&env.run(&["issuer", "list"])).contains(idp));
+    assert_eq!(
+        env.run(&["issuer", "show", "https://none.example.org"])
+            .status
+            .code(),
+        Some(3)
+    );
+
+    // update / disable / enable.
+    let update = env.run(&["issuer", "update", idp, "--client", &client]);
+    assert_eq!(update.status.code(), Some(0));
+    assert_eq!(env.run(&["issuer", "update", idp]).status.code(), Some(2));
+    assert_eq!(env.run(&["issuer", "disable", idp]).status.code(), Some(0));
+    let shown = common::stdout(&env.run(&["issuer", "show", idp]));
+    assert_eq!(field(&shown, "status"), "disabled");
+    assert_eq!(env.run(&["issuer", "enable", idp]).status.code(), Some(0));
+
+    // map-subject / list-subjects / unmap-subject.
+    let map = |user: &str| {
+        env.run(&[
+            "issuer",
+            "map-subject",
+            idp,
+            "--subject",
+            "ext-1",
+            "--username",
+            user,
+        ])
+    };
+    assert_eq!(map("alice").status.code(), Some(3));
+    let user = common::run(
+        &env.config,
+        &["user", "create", "alice"],
+        Some("password123"),
+    );
+    assert_eq!(user.status.code(), Some(0));
+    assert_eq!(map("alice").status.code(), Some(0));
+    assert_eq!(map("alice").status.code(), Some(0));
+    let subjects = common::stdout(&env.run(&["issuer", "list-subjects", idp]));
+    assert_eq!(subjects.lines().count(), 1, "{subjects}");
+    assert!(subjects.contains("ext-1") && subjects.contains("alice"));
+    let unmap = ["issuer", "unmap-subject", idp, "--subject", "ext-1"];
+    assert_eq!(env.run(&unmap).status.code(), Some(0));
+    assert_eq!(env.run(&unmap).status.code(), Some(3));
+    assert_eq!(env.audit("issuer.subject_mapped").await.0, 2);
+    std::fs::remove_dir_all(dir).ok();
+}

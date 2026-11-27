@@ -17,10 +17,7 @@ pub(crate) struct Expected<'a> {
 
 /// The claims of an assertion that passed [`verify_assertion`].
 pub(crate) struct VerifiedAssertion {
-    // Read by the jwt-bearer grant (T7); client authentication needs only `jti` and `exp`.
-    #[cfg_attr(not(test), expect(dead_code))]
     pub issuer: String,
-    #[cfg_attr(not(test), expect(dead_code))]
     pub subject: String,
     pub jti: String,
     /// The `exp` claim itself (leeway not added). Record with `+ ASSERTION_LEEWAY`.

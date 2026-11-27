@@ -874,3 +874,365 @@ fn unsigned_and_expired_assertions_are_rejected_with_reasons() {
         "{reasons:?}"
     );
 }
+
+// ---- jwt-bearer grant (F-10, F-11) ----
+
+mod jwt_bearer {
+    use super::*;
+    use komainu_application::{ClientAuthentication, RegisterClient, RegisterIssuer};
+    use komainu_domain::{
+        ClientId, ExternalSubject, IssuerId, Subject, TrustedIssuerUpdate, UserId, Username,
+    };
+    use komainu_jose::SigningKey;
+
+    const IDP: &str = "https://idp.example.com";
+    const GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
+
+    /// A confidential client without redirect URIs (no authorization_code grant).
+    fn bearer(grant_types: &[GrantType]) -> RegisterClient {
+        RegisterClient {
+            redirect_uris: vec![],
+            ..confidential(grant_types)
+        }
+    }
+
+    struct Env {
+        fx: Fixture,
+        client: Registered,
+        key: SigningKey,
+        user_id: UserId,
+    }
+
+    fn setup() -> Env {
+        let (fx, _) = assertion_fixture();
+        let grants = [GrantType::JwtBearer, GrantType::ClientCredentials];
+        let client = register(&fx, bearer(&grants));
+        let key = key_with_kid("idp-1");
+        block_on(fx.admin.register_issuer(
+            &ctx(),
+            RegisterIssuer {
+                id: IssuerId::try_new(IDP.to_owned()).unwrap(),
+                jwks: jwks_document(&key),
+                allowed_clients: [client.id.clone()].into(),
+            },
+        ))
+        .unwrap();
+        create_user(&fx, "alice");
+        let mapping = map(&fx, "u-1", "alice");
+        Env {
+            fx,
+            client,
+            key,
+            user_id: mapping,
+        }
+    }
+
+    fn jwks_document(key: &SigningKey) -> komainu_domain::JwksDocument {
+        komainu_domain::JwksDocument::try_new(jwks_json(&[key])).unwrap()
+    }
+
+    fn map(fx: &Fixture, subject: &str, username: &str) -> UserId {
+        block_on(fx.admin.map_subject(
+            &ctx(),
+            &IssuerId::try_new(IDP.to_owned()).unwrap(),
+            ExternalSubject::try_new(subject.to_owned()).unwrap(),
+            &Username::try_new(username.to_owned()).unwrap(),
+        ))
+        .unwrap()
+        .user_id
+    }
+
+    fn request(assertion: String) -> TokenRequest {
+        TokenRequest {
+            assertion: Some(assertion),
+            ..grant_request(GRANT, None)
+        }
+    }
+
+    fn good(env: &Env, jti: &str) -> String {
+        assertion_with(&env.fx, &env.key, IDP, "u-1", jti, ISSUER, 60)
+    }
+
+    fn rejected(fx: &Fixture) -> Vec<(String, String)> {
+        fx.env
+            .store
+            .audit_events()
+            .into_iter()
+            .filter(|e| e.kind == AuditKind::AssertionRejected)
+            .map(|e| {
+                (
+                    e.details
+                        .get("issuer_presented")
+                        .cloned()
+                        .unwrap_or_default(),
+                    e.details.get("reason").cloned().unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
+    /// Resolves every subject to the user `alice`, ignoring the mapping table.
+    struct AliceResolver;
+
+    impl komainu_application::AssertionSubjectResolver for AliceResolver {
+        fn resolve<'a>(
+            &'a self,
+            uow: &'a mut dyn komainu_application::UnitOfWork,
+            _issuer: &'a komainu_domain::TrustedIssuer,
+            _subject: &'a ExternalSubject,
+        ) -> komainu_application::BoxFuture<
+            'a,
+            Result<Option<UserId>, komainu_application::StoreError>,
+        > {
+            Box::pin(async move {
+                let name = Username::try_new("alice".to_owned()).unwrap();
+                Ok(uow.users().find_by_username(&name).await?.map(|u| *u.id()))
+            })
+        }
+    }
+
+    #[test]
+    fn a_fake_subject_resolver_works_without_a_mapping_table() {
+        let test_env = komainu_testkit::TestEnv::new(config().with_issuer(ISSUER))
+            .with_subject_resolver(std::sync::Arc::new(AliceResolver));
+        let deps = test_env.deps.clone();
+        let fx = Fixture {
+            admin: komainu_application::AdminService::new(deps.clone()),
+            authz: komainu_application::AuthorizationService::new(deps.clone()),
+            token: komainu_application::TokenService::new(deps.clone()),
+            maintenance: komainu_application::MaintenanceService::new(deps),
+            env: test_env,
+        };
+        let client = register(&fx, bearer(&[GrantType::JwtBearer]));
+        let key = key_with_kid("idp-1");
+        block_on(fx.admin.register_issuer(
+            &ctx(),
+            RegisterIssuer {
+                id: IssuerId::try_new(IDP.to_owned()).unwrap(),
+                jwks: jwks_document(&key),
+                allowed_clients: [client.id.clone()].into(),
+            },
+        ))
+        .unwrap();
+        create_user(&fx, "alice");
+        let jwt = assertion_with(&fx, &key, IDP, "anyone", "j1", ISSUER, 60);
+        let res = exchange(&fx, client.basic(), request(jwt)).unwrap();
+        assert!(res.refresh_token.is_none());
+    }
+
+    #[test]
+    fn issues_an_access_token_for_the_mapped_user() {
+        let env = setup();
+        let res = exchange(&env.fx, env.client.basic(), request(good(&env, "j1"))).unwrap();
+        assert!(res.refresh_token.is_none());
+        assert_eq!(res.scope, scopes("read"));
+        let info = block_on(env.fx.token.verify_access_token(res.access_token.expose()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.subject, Some(Subject::from(env.user_id)));
+        assert_eq!(info.client_id, env.client.id);
+        let issued = env
+            .fx
+            .env
+            .store
+            .audit_events()
+            .into_iter()
+            .find(|e| e.kind == AuditKind::TokenIssued)
+            .unwrap();
+        assert_eq!(issued.details.get("issuer").map(String::as_str), Some(IDP));
+        assert_eq!(
+            issued.details.get("grant_type").map(String::as_str),
+            Some(GRANT)
+        );
+        // An explicit scope is honoured; one the client may not use is invalid_scope.
+        let mut write = request(good(&env, "j2"));
+        write.scope = Some("write".to_owned());
+        let res = exchange(&env.fx, env.client.basic(), write).unwrap();
+        assert_eq!(res.scope, scopes("write"));
+        let mut admin = request(good(&env, "j3"));
+        admin.scope = Some("admin".to_owned());
+        let err = exchange(&env.fx, env.client.basic(), admin).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidScope));
+        assert!(rejected(&env.fx).is_empty());
+    }
+
+    #[test]
+    fn rejections_are_invalid_grant_with_a_reason() {
+        let env = setup();
+        let fx = &env.fx;
+        let other = key_with_kid("idp-1");
+        let cases: Vec<(String, &str)> = vec![
+            (
+                assertion_with(fx, &other, IDP, "u-1", "a", ISSUER, 60),
+                "signature",
+            ),
+            (
+                assertion_with(fx, &env.key, IDP, "u-1", "b", "https://x", 60),
+                "audience",
+            ),
+            (
+                assertion_with(fx, &env.key, IDP, "u-1", "c", ISSUER, -300),
+                "expired",
+            ),
+            (
+                assertion_with(fx, &env.key, IDP, "nobody", "d", ISSUER, 60),
+                "unknown_subject",
+            ),
+            (
+                assertion_with(
+                    fx,
+                    &env.key,
+                    "https://other.example.com",
+                    "u-1",
+                    "e",
+                    ISSUER,
+                    60,
+                ),
+                "unknown_issuer",
+            ),
+            ("garbage".to_owned(), "malformed"),
+        ];
+        let mut expected = Vec::new();
+        for (jwt, reason) in cases {
+            let err = exchange(fx, env.client.basic(), request(jwt.clone())).unwrap_err();
+            assert!(matches!(err, TokenError::InvalidGrant), "{reason}: {err:?}");
+            let presented = match reason {
+                "unknown_issuer" => "https://other.example.com",
+                "malformed" => "",
+                _ => IDP,
+            };
+            expected.push((presented.to_owned(), reason.to_owned()));
+        }
+        // A "malformed" assertion presents no issuer: it is recorded as "null".
+        expected[5].0 = "null".to_owned();
+        assert_eq!(rejected(fx), expected);
+        // Nothing was issued and no jti of a rejected assertion was consumed.
+        assert!(!audit_kinds(fx).contains(&AuditKind::TokenIssued));
+    }
+
+    #[test]
+    fn replay_issuer_state_and_user_state_are_rejected() {
+        let env = setup();
+        let fx = &env.fx;
+        let jwt = good(&env, "r1");
+        exchange(fx, env.client.basic(), request(jwt.clone())).unwrap();
+        let err = exchange(fx, env.client.basic(), request(jwt)).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidGrant));
+        // Disabled issuer.
+        let id = IssuerId::try_new(IDP.to_owned()).unwrap();
+        block_on(fx.admin.disable_issuer(&ctx(), &id)).unwrap();
+        let err = exchange(fx, env.client.basic(), request(good(&env, "r2"))).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidGrant));
+        block_on(fx.admin.enable_issuer(&ctx(), &id)).unwrap();
+        // The issuer no longer allows the client.
+        let other = register(fx, bearer(&[GrantType::JwtBearer]));
+        block_on(fx.admin.update_issuer(
+            &ctx(),
+            &id,
+            TrustedIssuerUpdate {
+                allowed_clients: Some([other.id.clone()].into()),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        let err = exchange(fx, env.client.basic(), request(good(&env, "r3"))).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidGrant));
+        // Disabled user.
+        block_on(
+            fx.admin
+                .disable_user(&ctx(), &Username::try_new("alice".to_owned()).unwrap()),
+        )
+        .unwrap();
+        let err = exchange(fx, other.basic(), request(good(&env, "r4"))).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidGrant));
+        let reasons: Vec<_> = rejected(fx).into_iter().map(|r| r.1).collect();
+        assert_eq!(
+            reasons,
+            [
+                "replay",
+                "issuer_disabled",
+                "client_not_allowed",
+                "user_disabled"
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_assertion_and_missing_grant_are_not_audited_as_rejections() {
+        let env = setup();
+        let fx = &env.fx;
+        let err = exchange(fx, env.client.basic(), grant_request(GRANT, None)).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidRequest));
+        let secret_only = register(fx, bearer(&[GrantType::ClientCredentials]));
+        let err = exchange(fx, secret_only.basic(), request(good(&env, "m1"))).unwrap_err();
+        assert!(matches!(err, TokenError::UnauthorizedClient));
+        assert!(rejected(fx).is_empty());
+    }
+
+    #[test]
+    fn unsupported_without_an_issuer() {
+        let fx = Fixture::new();
+        let client = register(&fx, bearer(&[GrantType::ClientCredentials]));
+        let err = exchange(&fx, client.basic(), request("x".to_owned())).unwrap_err();
+        assert!(matches!(err, TokenError::UnsupportedGrantType));
+    }
+
+    #[test]
+    fn a_rejected_assertion_rolls_back_the_client_assertion_jti() {
+        let (fx, _) = assertion_fixture();
+        let client_key = key_with_kid("c1");
+        let idp_key = key_with_kid("idp-1");
+        let client_id: ClientId = block_on(fx.admin.register_client(
+            &ctx(),
+            RegisterClient {
+                grant_types: grants(&[GrantType::JwtBearer]),
+                redirect_uris: vec![],
+                ..private_key_jwt(jwks_keys(&[&client_key]))
+            },
+        ))
+        .unwrap()
+        .client
+        .id;
+        block_on(fx.admin.register_issuer(
+            &ctx(),
+            RegisterIssuer {
+                id: IssuerId::try_new(IDP.to_owned()).unwrap(),
+                jwks: jwks_document(&idp_key),
+                allowed_clients: [client_id.clone()].into(),
+            },
+        ))
+        .unwrap();
+        create_user(&fx, "alice");
+        map(&fx, "u-1", "alice");
+        let auth = |jti: &str| -> ClientAuthentication {
+            assertion_auth(
+                Some(&client_id),
+                assertion(&fx, &client_key, &client_id, jti),
+            )
+        };
+        let bad = assertion_with(&fx, &idp_key, IDP, "nobody", "g1", ISSUER, 60);
+        let err = exchange(&fx, auth("same-client-jti"), request(bad)).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidGrant));
+        // The same client assertion succeeds on retry (its jti was rolled back).
+        let ok = assertion_with(&fx, &idp_key, IDP, "u-1", "g2", ISSUER, 60);
+        exchange(&fx, auth("same-client-jti"), request(ok)).unwrap();
+        assert_eq!(rejected(&fx).len(), 1);
+    }
+
+    #[test]
+    fn disabling_the_user_revokes_jwt_bearer_grants() {
+        let env = setup();
+        let res = exchange(&env.fx, env.client.basic(), request(good(&env, "d1"))).unwrap();
+        block_on(
+            env.fx
+                .admin
+                .disable_user(&ctx(), &Username::try_new("alice".to_owned()).unwrap()),
+        )
+        .unwrap();
+        assert!(
+            block_on(env.fx.token.verify_access_token(res.access_token.expose()))
+                .unwrap()
+                .is_none()
+        );
+    }
+}

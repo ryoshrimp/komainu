@@ -17,7 +17,8 @@ pub struct ServerCapabilities {
     pub response_types: Vec<ResponseType>,
     /// Always `[ResponseMode::Query]` today.
     pub response_modes: Vec<ResponseMode>,
-    /// `[AuthorizationCode, ClientCredentials, RefreshToken]`.
+    /// `[AuthorizationCode, ClientCredentials, RefreshToken]`, plus `JwtBearer` when `issuer`
+    /// is set.
     pub grant_types: Vec<GrantType>,
     /// `[ClientSecretBasic, ClientSecretPost]`, then `PrivateKeyJwt` when `issuer` is set,
     /// plus `None` last when `allow_public_clients` is true.
@@ -42,9 +43,15 @@ impl ServerCapabilities {
             TokenEndpointAuthMethod::ClientSecretPost,
         ];
         let mut algs = Vec::new();
+        let mut grant_types = vec![
+            GrantType::AuthorizationCode,
+            GrantType::ClientCredentials,
+            GrantType::RefreshToken,
+        ];
         if config.issuer.is_some() {
             auth_methods.push(TokenEndpointAuthMethod::PrivateKeyJwt);
             algs = vec![Algorithm::Rs256, Algorithm::Es256];
+            grant_types.push(GrantType::JwtBearer);
         }
         if config.allow_public_clients {
             auth_methods.push(TokenEndpointAuthMethod::None);
@@ -52,11 +59,7 @@ impl ServerCapabilities {
         Self {
             response_types: vec![ResponseType::Code],
             response_modes: vec![ResponseMode::Query],
-            grant_types: vec![
-                GrantType::AuthorizationCode,
-                GrantType::ClientCredentials,
-                GrantType::RefreshToken,
-            ],
+            grant_types,
             token_endpoint_auth_methods: auth_methods.clone(),
             revocation_endpoint_auth_methods: auth_methods,
             code_challenge_methods: vec![CodeChallengeMethod::S256],

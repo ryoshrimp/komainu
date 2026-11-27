@@ -20,7 +20,10 @@ pub mod port;
 mod support;
 pub mod token;
 
-pub use admin::{AdminError, AdminService, ClientView, RegisterClient, RegisteredClient, UserView};
+pub use admin::{
+    AdminError, AdminService, ClientView, IssuerView, RegisterClient, RegisterIssuer,
+    RegisteredClient, SubjectMappingView, UserView,
+};
 pub use assertion::{
     ASSERTION_LEEWAY, ASSERTION_MAX_LEN, ASSERTION_MAX_LIFETIME, CLIENT_ASSERTION_TYPE_JWT_BEARER,
     GRANT_TYPE_JWT_BEARER, JWKS_CACHE_TTL, JWKS_MIN_REFETCH_INTERVAL, JwksResolver,

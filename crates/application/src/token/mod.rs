@@ -4,9 +4,9 @@ mod error;
 mod request;
 
 use komainu_domain::{
-    AccessToken, Client, ClientId, ClientKeys, CodeVerifier, Grant, GrantId, GrantType,
-    OpaqueToken, RedeemCodeError, RedirectUri, RefreshToken, RevocationReason,
-    RotateRefreshTokenError, ScopeSet, Secret, TokenEndpointAuthMethod,
+    AccessToken, Client, ClientId, ClientKeys, CodeVerifier, ExternalSubject, Grant, GrantId,
+    GrantType, IssuerId, OpaqueToken, RedeemCodeError, RedirectUri, RefreshToken, RevocationReason,
+    RotateRefreshTokenError, ScopeSet, Secret, Subject, TokenEndpointAuthMethod, UserId,
 };
 use komainu_jose::{JwkSet, jwt};
 
@@ -18,7 +18,7 @@ pub use request::{
 
 use crate::assertion::jwks::{Freshness, KeyResolveError};
 use crate::assertion::verify::{AssertionError, Expected, verify_assertion};
-use crate::assertion::{ASSERTION_LEEWAY, ASSERTION_MAX_LEN};
+use crate::assertion::{ASSERTION_LEEWAY, ASSERTION_MAX_LEN, GRANT_TYPE_JWT_BEARER};
 use crate::audit::{AuditActor, AuditEvent, AuditKind, AuditOutcome};
 use crate::context::RequestContext;
 use crate::deps::Dependencies;
@@ -99,6 +99,12 @@ impl TokenService {
             Some("authorization_code") => GrantType::AuthorizationCode,
             Some("client_credentials") => GrantType::ClientCredentials,
             Some("refresh_token") => GrantType::RefreshToken,
+            Some(GRANT_TYPE_JWT_BEARER) => {
+                if self.deps.config.issuer.is_none() {
+                    return Err(TokenError::UnsupportedGrantType);
+                }
+                GrantType::JwtBearer
+            }
             Some(_) => return Err(TokenError::UnsupportedGrantType),
         };
         let uow = self.deps.store.begin().await?;
@@ -119,9 +125,10 @@ impl TokenService {
                 self.refresh_token(ctx, uow.as_mut(), &client, &request)
                     .await?
             }
-            // Placeholder: the wire value is not parsed above. T7 replaces this with the
-            // jwt-bearer grant.
-            GrantType::JwtBearer => return Err(TokenError::UnsupportedGrantType),
+            GrantType::JwtBearer => {
+                self.jwt_bearer(ctx, uow.as_mut(), &client, &request)
+                    .await?
+            }
         };
         let (response, grant_id, audit) = match step {
             Step::Issued {
@@ -134,6 +141,9 @@ impl TokenService {
                 grant_id,
                 reason,
             } => return Err(self.finish_replay(ctx, uow, events, grant_id, reason).await),
+            Step::Rejected { audit } => {
+                return Err(self.finish_rejected(ctx, uow, *audit).await);
+            }
         };
         let event = audit
             .detail("grant_type", grant_type.as_str())
@@ -549,6 +559,27 @@ impl TokenService {
         }
     }
 
+    /// Commits only the audit of a rejected assertion, dropping `uow`: the client
+    /// authentication `jti` rolls back with it, so the client can retry.
+    async fn finish_rejected(
+        &self,
+        _ctx: &RequestContext,
+        uow: Box<dyn UnitOfWork>,
+        audit: AuditEvent,
+    ) -> TokenError {
+        drop(uow);
+        let result: Result<(), StoreError> = async {
+            let mut audit_uow = self.deps.store.begin().await?;
+            append_all(audit_uow.as_mut(), vec![audit]).await?;
+            audit_uow.commit().await
+        }
+        .await;
+        match result {
+            Ok(()) => TokenError::InvalidGrant,
+            Err(e) => TokenError::Server(e),
+        }
+    }
+
     async fn authorization_code(
         &self,
         ctx: &RequestContext,
@@ -629,6 +660,150 @@ impl TokenService {
             .issue_tokens(uow, client, &grant, scope, false, now)
             .await?;
         Ok(self.issued(ctx, client, &grant, response))
+    }
+
+    /// RFC 7523 jwt-bearer grant: an assertion from a trusted external issuer.
+    async fn jwt_bearer(
+        &self,
+        ctx: &RequestContext,
+        uow: &mut dyn UnitOfWork,
+        client: &Client,
+        request: &TokenRequest,
+    ) -> Result<Step, TokenError> {
+        let deps = &self.deps;
+        // `exchange` already refused the grant without an issuer.
+        let own_issuer = deps
+            .config
+            .issuer
+            .as_deref()
+            .ok_or(TokenError::UnsupportedGrantType)?;
+        let assertion = request
+            .assertion
+            .as_deref()
+            .ok_or(TokenError::InvalidRequest)?;
+        let mut presented: Option<String> = None;
+        let verified = match self
+            .verify_external_assertion(uow, client, own_issuer, assertion, &mut presented)
+            .await
+        {
+            Ok(verified) => verified,
+            Err(AssertionRejected::Reason(reason)) => {
+                let audit = audit_event(
+                    deps,
+                    ctx,
+                    AuditKind::AssertionRejected,
+                    AuditOutcome::Failure,
+                    AuditActor::Client,
+                )
+                .client(client.id())
+                .detail(
+                    "issuer_presented",
+                    presented.map_or_else(|| "null".to_owned(), |iss| truncate_chars(&iss, 64)),
+                )
+                .detail("reason", reason);
+                return Ok(Step::Rejected {
+                    audit: Box::new(audit),
+                });
+            }
+            Err(AssertionRejected::Request) => return Err(TokenError::InvalidRequest),
+            Err(AssertionRejected::Store(e)) => return Err(e.into()),
+        };
+        let now = deps.clock.now();
+        let requested = match request.scope.as_deref() {
+            Some(raw) => Some(ScopeSet::parse(raw).map_err(|_| TokenError::InvalidScope)?),
+            None => None,
+        };
+        let scope = client
+            .resolve_scope(requested.as_ref())
+            .map_err(|_| TokenError::InvalidScope)?;
+        let grant_id = GrantId::new(new_uuid_v7(deps.clock.as_ref(), deps.random.as_ref()));
+        let grant = Grant::for_jwt_bearer(
+            grant_id,
+            client.id().clone(),
+            Subject::from(verified.user_id),
+            scope.clone(),
+            now,
+        );
+        uow.grants().insert(&grant).await?;
+        let response = self
+            .issue_tokens(uow, client, &grant, scope, false, now)
+            .await?;
+        let audit = self
+            .issued_event(ctx, client, &grant)
+            .detail("issuer", verified.issuer);
+        Ok(Step::Issued {
+            audit: Box::new(audit),
+            grant_id: *grant.id(),
+            response,
+        })
+    }
+
+    /// Verifies the assertion and maps its subject to an active user.
+    async fn verify_external_assertion(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        client: &Client,
+        own_issuer: &str,
+        assertion: &str,
+        presented: &mut Option<String>,
+    ) -> Result<ExternalIdentity, AssertionRejected> {
+        let deps = &self.deps;
+        let claims = jwt::peek_unverified(assertion, ASSERTION_MAX_LEN)
+            .map_err(|_| AssertionRejected::from("malformed"))?;
+        let Some(iss) = claims.iss else {
+            return Err("malformed".into());
+        };
+        *presented = Some(iss.clone());
+        let Ok(issuer_id) = IssuerId::try_new(iss.clone()) else {
+            return Err("malformed".into());
+        };
+        let Some(issuer) = uow.trusted_issuers().find(&issuer_id).await? else {
+            return Err("unknown_issuer".into());
+        };
+        if !issuer.is_active() {
+            return Err("issuer_disabled".into());
+        }
+        if !issuer.allows_client(client.id()) {
+            return Err("client_not_allowed".into());
+        }
+        let keys = JwkSet::from_json(issuer.jwks().as_str())
+            .map_err(|_| AssertionRejected::from("invalid_jwks"))?;
+        let now = deps.clock.now();
+        let token_endpoint = format!("{own_issuer}/token");
+        let expected = Expected {
+            issuer: &iss,
+            subject: None,
+            audiences: [own_issuer, &token_endpoint],
+        };
+        let verified = verify_assertion(assertion, keys.keys(), &expected, now)
+            .map_err(|e| AssertionRejected::from(e.reason()))?;
+        let Ok(subject) = ExternalSubject::try_new(verified.subject.clone()) else {
+            return Err("malformed".into());
+        };
+        let Some(user_id) = deps
+            .subject_resolver
+            .resolve(uow, &issuer, &subject)
+            .await?
+        else {
+            return Err("unknown_subject".into());
+        };
+        match uow.users().find(user_id).await? {
+            Some(user) if user.is_active() => {}
+            _ => return Err("user_disabled".into()),
+        }
+        let used = UsedAssertion {
+            kind: AssertionKind::AuthorizationGrant,
+            issuer: verified.issuer.clone(),
+            jti: verified.jti,
+            expires_at: verified.exp + ASSERTION_LEEWAY,
+        };
+        match uow.used_assertions().record(&used).await? {
+            RecordOutcome::Recorded => Ok(ExternalIdentity {
+                issuer: verified.issuer,
+                user_id,
+            }),
+            RecordOutcome::Replayed => Err("replay".into()),
+        }
     }
 
     async fn refresh_token(
@@ -739,6 +914,12 @@ impl TokenService {
     }
 }
 
+/// The verified external issuer and the local user its subject maps to.
+struct ExternalIdentity {
+    issuer: String,
+    user_id: UserId,
+}
+
 /// Result of a per-grant step.
 enum Step {
     Issued {
@@ -746,6 +927,8 @@ enum Step {
         grant_id: GrantId,
         audit: Box<AuditEvent>,
     },
+    /// A jwt-bearer assertion was rejected: commit only the audit, then fail.
+    Rejected { audit: Box<AuditEvent> },
     /// Replay detected: revoke the grant and commit `events`, then fail.
     Replay {
         events: Vec<AuditEvent>,
