@@ -1,6 +1,7 @@
 //! What the authorization server supports, independent of URLs.
 
 use komainu_domain::{CodeChallengeMethod, GrantType, ScopeToken, TokenEndpointAuthMethod};
+use komainu_jose::Algorithm;
 
 use crate::config::ApplicationConfig;
 
@@ -18,13 +19,17 @@ pub struct ServerCapabilities {
     pub response_modes: Vec<ResponseMode>,
     /// `[AuthorizationCode, ClientCredentials, RefreshToken]`.
     pub grant_types: Vec<GrantType>,
-    /// `[ClientSecretBasic, ClientSecretPost]`, plus `None` last when
-    /// `allow_public_clients` is true.
+    /// `[ClientSecretBasic, ClientSecretPost]`, then `PrivateKeyJwt` when `issuer` is set,
+    /// plus `None` last when `allow_public_clients` is true.
     pub token_endpoint_auth_methods: Vec<TokenEndpointAuthMethod>,
     /// Same as `token_endpoint_auth_methods`.
     pub revocation_endpoint_auth_methods: Vec<TokenEndpointAuthMethod>,
     /// `[CodeChallengeMethod::S256]`.
     pub code_challenge_methods: Vec<CodeChallengeMethod>,
+    /// `[Rs256, Es256]` when `issuer` is set (`private_key_jwt` is advertised), else empty.
+    pub token_endpoint_auth_signing_algs: Vec<Algorithm>,
+    /// Same as `token_endpoint_auth_signing_algs`.
+    pub revocation_endpoint_auth_signing_algs: Vec<Algorithm>,
     /// `ApplicationConfig::scopes` names, in configuration order. May be empty.
     pub scopes: Vec<ScopeToken>,
 }
@@ -36,6 +41,11 @@ impl ServerCapabilities {
             TokenEndpointAuthMethod::ClientSecretBasic,
             TokenEndpointAuthMethod::ClientSecretPost,
         ];
+        let mut algs = Vec::new();
+        if config.issuer.is_some() {
+            auth_methods.push(TokenEndpointAuthMethod::PrivateKeyJwt);
+            algs = vec![Algorithm::Rs256, Algorithm::Es256];
+        }
         if config.allow_public_clients {
             auth_methods.push(TokenEndpointAuthMethod::None);
         }
@@ -50,6 +60,8 @@ impl ServerCapabilities {
             token_endpoint_auth_methods: auth_methods.clone(),
             revocation_endpoint_auth_methods: auth_methods,
             code_challenge_methods: vec![CodeChallengeMethod::S256],
+            token_endpoint_auth_signing_algs: algs.clone(),
+            revocation_endpoint_auth_signing_algs: algs,
             scopes: config.scopes.iter().map(|s| s.name.clone()).collect(),
         }
     }

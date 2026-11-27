@@ -3,9 +3,10 @@
 use std::sync::Arc;
 
 use komainu_application::{
-    AdminService, ApplicationConfig, AuthorizationService, BuiltinAuthenticator, Clock,
-    Dependencies, JwksResolver, MaintenanceService, MappingTableSubjectResolver, PasswordHasher,
-    ResourceOwnerAuthenticator, SecureRandom, TokenService, UnitOfWorkFactory,
+    AdminService, ApplicationConfig, AssertionSubjectResolver, AuthorizationService,
+    BuiltinAuthenticator, Clock, Dependencies, JwksFetcher, JwksResolver, MaintenanceService,
+    MappingTableSubjectResolver, PasswordHasher, ResourceOwnerAuthenticator, SecureRandom,
+    TokenService, UnitOfWorkFactory,
 };
 #[cfg(feature = "http")]
 use komainu_http::{AppState, HttpConfig, ScreenRenderer};
@@ -84,6 +85,8 @@ pub struct KomainuBuilder {
     random: Option<Arc<dyn SecureRandom>>,
     password_hasher: Option<Arc<dyn PasswordHasher>>,
     authenticator: Option<Arc<dyn ResourceOwnerAuthenticator>>,
+    jwks_fetcher: Option<Arc<dyn JwksFetcher>>,
+    subject_resolver: Option<Arc<dyn AssertionSubjectResolver>>,
     #[cfg(feature = "http")]
     http_config: Option<HttpConfig>,
     #[cfg(feature = "http")]
@@ -134,11 +137,27 @@ impl KomainuBuilder {
         self
     }
 
+    /// Fetches the JWKS of clients registered with `jwks_uri`. Default with `jwks-uri`:
+    /// `ReqwestJwksFetcher` with its default settings. Without a fetcher, `jwks_uri` clients
+    /// cannot authenticate.
+    pub fn jwks_fetcher(mut self, fetcher: Arc<dyn JwksFetcher>) -> Self {
+        self.jwks_fetcher = Some(fetcher);
+        self
+    }
+
+    /// Maps the `sub` of a jwt-bearer assertion to a user. Default:
+    /// `MappingTableSubjectResolver`.
+    pub fn subject_resolver(mut self, resolver: Arc<dyn AssertionSubjectResolver>) -> Self {
+        self.subject_resolver = Some(resolver);
+        self
+    }
+
     /// The HTTP settings. Required with `http`.
     ///
     /// The `csrf_cookie_ttl` of `config` is replaced by
     /// `ApplicationConfig::authorization_request_ttl`, because the CSRF cookie must live as
-    /// long as the authorization request.
+    /// long as the authorization request. When `ApplicationConfig::issuer` is unset it
+    /// becomes the public base URL, which enables `private_key_jwt`.
     #[cfg(feature = "http")]
     pub fn http_config(mut self, config: HttpConfig) -> Self {
         self.http_config = Some(config);
@@ -160,7 +179,8 @@ impl KomainuBuilder {
     /// cannot be created.
     pub fn build(self) -> Result<Komainu, BuildError> {
         let store = self.store.ok_or(BuildError::MissingStore)?;
-        let application_config = self.application_config.unwrap_or_default();
+        #[cfg_attr(not(feature = "http"), expect(unused_mut))]
+        let mut application_config = self.application_config.unwrap_or_default();
 
         #[cfg(not(feature = "std"))]
         let (clock, random, password_hasher) = (
@@ -196,11 +216,30 @@ impl KomainuBuilder {
         #[cfg(feature = "http")]
         let http_config =
             http_config.with_csrf_cookie_ttl(application_config.authorization_request_ttl);
+        #[cfg(feature = "http")]
+        if application_config.issuer.is_none() {
+            application_config.issuer = Some(http_config.public_base_url().to_owned());
+        }
+
+        let jwks_fetcher = self.jwks_fetcher;
+        #[cfg(feature = "jwks-uri")]
+        let jwks_fetcher = match jwks_fetcher {
+            Some(fetcher) => Some(fetcher),
+            None => {
+                let fetcher = komainu_adapter_http::ReqwestJwksFetcher::new(
+                    komainu_adapter_http::JwksFetcherConfig::default(),
+                )
+                .map_err(BuildError::JwksFetcher)?;
+                Some(Arc::new(fetcher) as Arc<dyn JwksFetcher>)
+            }
+        };
 
         let deps = Dependencies {
             store,
-            jwks: Arc::new(JwksResolver::new(None, clock.clone())),
-            subject_resolver: Arc::new(MappingTableSubjectResolver),
+            jwks: Arc::new(JwksResolver::new(jwks_fetcher, clock.clone())),
+            subject_resolver: self
+                .subject_resolver
+                .unwrap_or_else(|| Arc::new(MappingTableSubjectResolver)),
             clock,
             random,
             password_hasher,
@@ -246,4 +285,8 @@ pub enum BuildError {
     /// The Argon2 hasher could not be initialized.
     #[error("failed to initialize the password hasher: {0}")]
     PasswordHasher(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// The HTTP client for `jwks_uri` could not be created.
+    #[cfg(feature = "jwks-uri")]
+    #[error("failed to build the JWKS fetcher: {0}")]
+    JwksFetcher(#[source] komainu_adapter_http::BuildError),
 }

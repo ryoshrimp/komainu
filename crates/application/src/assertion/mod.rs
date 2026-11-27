@@ -1,9 +1,6 @@
 //! Verification of JWT assertions (RFC 7521 / 7523) and the cache of `jwks_uri` keys.
 
-// `jwks` and `verify` are wired into the token endpoint later; until then only tests use them.
-#[cfg_attr(not(test), expect(dead_code))]
-mod jwks;
-#[cfg_attr(not(test), expect(dead_code))]
+pub(crate) mod jwks;
 pub(crate) mod verify;
 
 pub use jwks::JwksResolver;

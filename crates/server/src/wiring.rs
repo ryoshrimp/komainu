@@ -85,6 +85,8 @@ impl Settings {
             ),
             None => http,
         };
+        // The issuer is the normalized public base URL; it enables private_key_jwt.
+        let application = application.with_issuer(http.public_base_url());
         let pg = PgStoreConfig {
             url: database.url,
             max_connections: database.max_connections,

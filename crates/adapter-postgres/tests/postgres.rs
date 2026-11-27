@@ -348,6 +348,7 @@ async fn tokens_are_stored_hashed_only() {
                 allowed_scopes: scope("read"),
                 default_scopes: scope("read"),
                 skip_consent: true,
+                keys: None,
             },
         )
         .await

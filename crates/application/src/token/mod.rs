@@ -4,10 +4,11 @@ mod error;
 mod request;
 
 use komainu_domain::{
-    AccessToken, Client, ClientId, CodeVerifier, Grant, GrantId, GrantType, OpaqueToken,
-    RedeemCodeError, RedirectUri, RefreshToken, RevocationReason, RotateRefreshTokenError,
-    ScopeSet, Secret, TokenEndpointAuthMethod,
+    AccessToken, Client, ClientId, ClientKeys, CodeVerifier, Grant, GrantId, GrantType,
+    OpaqueToken, RedeemCodeError, RedirectUri, RefreshToken, RevocationReason,
+    RotateRefreshTokenError, ScopeSet, Secret, TokenEndpointAuthMethod,
 };
+use komainu_jose::{JwkSet, jwt};
 
 pub use error::{RevocationError, TokenError};
 pub use request::{
@@ -15,11 +16,14 @@ pub use request::{
     TokenTypeHint,
 };
 
+use crate::assertion::jwks::{Freshness, KeyResolveError};
+use crate::assertion::verify::{AssertionError, Expected, verify_assertion};
+use crate::assertion::{ASSERTION_LEEWAY, ASSERTION_MAX_LEN};
 use crate::audit::{AuditActor, AuditEvent, AuditKind, AuditOutcome};
 use crate::context::RequestContext;
 use crate::deps::Dependencies;
 use crate::ids::{new_opaque_token, new_uuid_v7};
-use crate::port::{StoreError, UnitOfWork};
+use crate::port::{AssertionKind, RecordOutcome, StoreError, UnitOfWork, UsedAssertion};
 use crate::support::{
     AuditEventExt, append_all, audit_event, code_events, grant_events, refresh_events,
     truncate_chars,
@@ -29,6 +33,35 @@ use komainu_domain::{ClientType, TokenHash};
 #[derive(Clone)]
 pub struct TokenService {
     deps: Dependencies,
+}
+
+/// Why `authenticate_assertion` did not accept.
+enum AssertionRejected {
+    /// `client_id` and the assertion's `iss` differ (400, not audited).
+    Request,
+    /// 401 `invalid_client`, audited with this reason.
+    Reason(&'static str),
+    Store(StoreError),
+}
+
+impl From<&'static str> for AssertionRejected {
+    fn from(reason: &'static str) -> Self {
+        Self::Reason(reason)
+    }
+}
+
+impl From<StoreError> for AssertionRejected {
+    fn from(error: StoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+/// The audit reason of a failed `jwks_uri` resolution.
+fn key_failure(error: KeyResolveError) -> AssertionRejected {
+    match error {
+        KeyResolveError::InvalidJwks => "invalid_jwks".into(),
+        KeyResolveError::Fetch(_) | KeyResolveError::RefetchTooSoon => "key_fetch_failed".into(),
+    }
 }
 
 fn domain_failure(error: komainu_domain::DomainError) -> TokenError {
@@ -134,6 +167,7 @@ impl TokenService {
             Err(TokenError::InvalidClient { basic_attempted }) => {
                 return Err(RevocationError::InvalidClient { basic_attempted });
             }
+            Err(TokenError::InvalidRequest) => return Err(RevocationError::InvalidRequest),
             Err(TokenError::Server(e)) => return Err(RevocationError::Server(e)),
             Err(_) => {
                 return Err(RevocationError::Server(StoreError::Other(
@@ -141,8 +175,11 @@ impl TokenService {
                 )));
             }
         };
+        // An assertion's `jti` is recorded in this unit of work, so every success path of
+        // this method must commit it (D-3). Otherwise the assertion could be replayed.
+        let keep_jti = matches!(auth, ClientAuthentication::Assertion { .. });
         let Some(token) = parse_token(&raw) else {
-            return Ok(());
+            return Self::finish_revoke_noop(uow, keep_jti).await;
         };
         let hash = token.hash();
         let refresh_first = request
@@ -162,7 +199,7 @@ impl TokenService {
             }
         };
         let Some((token_type, token_client, grant_id)) = found else {
-            return Ok(());
+            return Self::finish_revoke_noop(uow, keep_jti).await;
         };
         if &token_client != client.id() {
             let event = audit_event(
@@ -187,13 +224,24 @@ impl TokenService {
                 RevocationError::Server(StoreError::Other("grant not found for token".to_owned()))
             })?;
         if !grant.is_active() {
-            return Ok(());
+            return Self::finish_revoke_noop(uow, keep_jti).await;
         }
         grant.revoke(RevocationReason::ClientRequest, deps.clock.now());
         uow.grants().update(&grant).await?;
         let events = grant_events(deps, ctx, &mut grant, AuditActor::Client);
         append_all(uow.as_mut(), events).await?;
         uow.commit().await?;
+        Ok(())
+    }
+
+    /// Ends a `revoke` that changed nothing. Commits only to keep an assertion's `jti`.
+    async fn finish_revoke_noop(
+        uow: Box<dyn UnitOfWork>,
+        keep_jti: bool,
+    ) -> Result<(), RevocationError> {
+        if keep_jti {
+            uow.commit().await?;
+        }
         Ok(())
     }
 
@@ -241,6 +289,14 @@ impl TokenService {
     ) -> Result<(Box<dyn UnitOfWork>, Client), TokenError> {
         let deps = &self.deps;
         let (method, presented, secret, basic) = match auth {
+            ClientAuthentication::Assertion {
+                client_id,
+                assertion,
+            } => {
+                return self
+                    .authenticate_assertion(ctx, uow, client_id.as_deref(), assertion)
+                    .await;
+            }
             ClientAuthentication::Basic { client_id, secret } => {
                 ("client_secret_basic", Some(client_id), Some(secret), true)
             }
@@ -282,7 +338,23 @@ impl TokenService {
             return Ok((uow, client));
         }
         drop(uow);
-        let event = audit_event(
+        self.fail_authentication(ctx, method, presented.map(String::as_str), None)
+            .await?;
+        Err(TokenError::InvalidClient {
+            basic_attempted: basic,
+        })
+    }
+
+    /// Audits a failed client authentication in a new unit of work.
+    async fn fail_authentication(
+        &self,
+        ctx: &RequestContext,
+        method: &'static str,
+        presented: Option<&str>,
+        reason: Option<&'static str>,
+    ) -> Result<(), StoreError> {
+        let deps = &self.deps;
+        let mut event = audit_event(
             deps,
             ctx,
             AuditKind::ClientAuthenticationFailed,
@@ -294,12 +366,137 @@ impl TokenService {
             "client_id_presented",
             presented.map_or_else(|| "null".to_owned(), |id| truncate_chars(id, 64)),
         );
+        if let Some(reason) = reason {
+            event = event.detail("reason", reason);
+        }
         let mut audit_uow = deps.store.begin().await?;
         append_all(audit_uow.as_mut(), vec![event]).await?;
-        audit_uow.commit().await?;
-        Err(TokenError::InvalidClient {
-            basic_attempted: basic,
-        })
+        audit_uow.commit().await
+    }
+
+    /// `private_key_jwt` (RFC 7523 §2.2). On rejection the unit of work is dropped (the `jti`
+    /// record with it) and the failure is audited in a new one.
+    async fn authenticate_assertion(
+        &self,
+        ctx: &RequestContext,
+        mut uow: Box<dyn UnitOfWork>,
+        client_id: Option<&str>,
+        assertion: &Secret<String>,
+    ) -> Result<(Box<dyn UnitOfWork>, Client), TokenError> {
+        let mut presented = client_id.map(str::to_owned);
+        match self
+            .verify_client_assertion(
+                uow.as_mut(),
+                client_id,
+                assertion.expose_secret_ref(),
+                &mut presented,
+            )
+            .await
+        {
+            Ok(client) => Ok((uow, client)),
+            Err(AssertionRejected::Request) => Err(TokenError::InvalidRequest),
+            Err(AssertionRejected::Store(e)) => Err(TokenError::Server(e)),
+            Err(AssertionRejected::Reason(reason)) => {
+                drop(uow);
+                self.fail_authentication(
+                    ctx,
+                    "private_key_jwt",
+                    presented.as_deref(),
+                    Some(reason),
+                )
+                .await?;
+                Err(TokenError::InvalidClient {
+                    basic_attempted: false,
+                })
+            }
+        }
+    }
+
+    /// Steps 1 to 7 of the client assertion check. `presented` is updated with the `iss`
+    /// once it has been read.
+    async fn verify_client_assertion(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        client_id: Option<&str>,
+        assertion: &str,
+        presented: &mut Option<String>,
+    ) -> Result<Client, AssertionRejected> {
+        let deps = &self.deps;
+        let Some(issuer) = deps.config.issuer.as_deref() else {
+            return Err("not_configured".into());
+        };
+        let claims = jwt::peek_unverified(assertion, ASSERTION_MAX_LEN)
+            .map_err(|_| AssertionRejected::from("malformed"))?;
+        let (Some(iss), Some(sub)) = (claims.iss, claims.sub) else {
+            return Err("malformed".into());
+        };
+        *presented = Some(iss.clone());
+        if iss != sub {
+            return Err("subject_mismatch".into());
+        }
+        if client_id.is_some_and(|given| given != iss) {
+            return Err(AssertionRejected::Request);
+        }
+        let client = match ClientId::try_new(iss.clone()) {
+            Ok(id) => uow.clients().find(&id).await?,
+            Err(_) => None,
+        };
+        let Some(client) = client else {
+            return Err("unknown_client".into());
+        };
+        if !client.is_active() {
+            return Err("client_disabled".into());
+        }
+        if client.auth_method() != TokenEndpointAuthMethod::PrivateKeyJwt {
+            return Err("method_not_allowed".into());
+        }
+        let uri = match client.keys() {
+            Some(ClientKeys::JwksUri(uri)) => Some(uri),
+            _ => None,
+        };
+        let keys: std::sync::Arc<JwkSet> = match client.keys() {
+            Some(ClientKeys::Jwks(doc)) => std::sync::Arc::new(
+                JwkSet::from_json(doc.as_str())
+                    .map_err(|_| AssertionRejected::from("invalid_jwks"))?,
+            ),
+            Some(ClientKeys::JwksUri(uri)) => deps
+                .jwks
+                .keys(uri, Freshness::Cached)
+                .await
+                .map_err(key_failure)?,
+            None => return Err("invalid_jwks".into()),
+        };
+        let now = deps.clock.now();
+        let token_endpoint = format!("{issuer}/token");
+        let expected = Expected {
+            issuer: &iss,
+            subject: Some(&iss),
+            audiences: [issuer, &token_endpoint],
+        };
+        let verified = match verify_assertion(assertion, keys.keys(), &expected, now) {
+            Err(AssertionError::KeyNotFound) if let Some(uri) = uri => {
+                // An unknown `kid` may be a rotated key: refetch (at most once a minute).
+                let keys = match deps.jwks.keys(uri, Freshness::Refresh).await {
+                    Err(KeyResolveError::RefetchTooSoon) => {
+                        return Err(AssertionError::KeyNotFound.reason().into());
+                    }
+                    other => other.map_err(key_failure)?,
+                };
+                verify_assertion(assertion, keys.keys(), &expected, now)
+            }
+            other => other,
+        }
+        .map_err(|e| AssertionRejected::from(e.reason()))?;
+        let used = UsedAssertion {
+            kind: AssertionKind::ClientAuthentication,
+            issuer: iss,
+            jti: verified.jti,
+            expires_at: verified.exp + ASSERTION_LEEWAY,
+        };
+        match uow.used_assertions().record(&used).await? {
+            RecordOutcome::Recorded => Ok(client),
+            RecordOutcome::Replayed => Err("replay".into()),
+        }
     }
 
     fn expires_in(&self) -> u64 {

@@ -59,9 +59,9 @@ pub(crate) async fn run_admin(admin: &AdminService, command: AdminCommand) -> Re
 fn admin_exit(error: AdminError) -> Exit {
     match error {
         AdminError::Invalid(error) => Exit::usage(error),
-        error @ (AdminError::UnknownScope(_) | AdminError::PublicClientsDisabled) => {
-            Exit::usage(error)
-        }
+        error @ (AdminError::UnknownScope(_)
+        | AdminError::PublicClientsDisabled
+        | AdminError::InvalidJwks(_)) => Exit::usage(error),
         AdminError::NotFound => Exit::new(3, "not found"),
         AdminError::Conflict => Exit::new(4, "already exists"),
         error @ (AdminError::PasswordHash(_) | AdminError::Store(_)) => Exit::runtime(error),

@@ -30,6 +30,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 komainu-testkit.workspace = true
+komainu-jose.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 http-body-util.workspace = true
 

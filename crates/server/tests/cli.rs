@@ -247,3 +247,96 @@ async fn cli_each_admin_command_adds_one_audit_row() {
         );
     }
 }
+
+const JWKS: &str = r#"{"keys":[{"kty":"EC","crv":"P-256","kid":"k1","x":"MKBCTNIcKUSDii11ySs3526iDZ8AiTo7Tu6KPAqv7D4","y":"4Etl6SRW2YiLUrN5vfvVHuhp7x8PxltmWWlbbM4IFyM"}]}"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_private_key_jwt_client_create_show_and_misuse() {
+    let env = env().await;
+    let dir = std::env::temp_dir().join(format!("komainu-cli-jwks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("jwks.json");
+    std::fs::write(&file, JWKS).unwrap();
+    let path = file.to_str().unwrap();
+    let mut args = create_args("read");
+    args.extend(["--auth-method", "private_key_jwt"]);
+
+    let with_file = [args.clone(), vec!["--jwks-file", path]].concat();
+    let created = env.run(&with_file);
+    assert_eq!(created.status.code(), Some(0));
+    let out = common::stdout(&created);
+    assert!(!out.contains("client_secret"), "{out}");
+    let id = field(&out, "client_id").to_owned();
+    let shown = common::stdout(&env.run(&["client", "show", &id]));
+    assert_eq!(field(&shown, "auth_method"), "private_key_jwt");
+    assert_eq!(field(&shown, "keys"), "jwks (1 keys)");
+    let json = common::stdout(&env.run(&["client", "show", &id, "--output", "json"]));
+    assert!(
+        json.contains("\"type\": \"jwks\"") || json.contains("\"type\":\"jwks\""),
+        "{json}"
+    );
+
+    let by_uri = [
+        args.clone(),
+        vec!["--jwks-uri", "https://client.example.com/jwks"],
+    ]
+    .concat();
+    assert_eq!(env.run(&by_uri).status.code(), Some(0));
+
+    // Neither, both, or keys with a secret method.
+    assert_eq!(env.run(&args).status.code(), Some(2));
+    let both = [
+        args.clone(),
+        vec![
+            "--jwks-file",
+            path,
+            "--jwks-uri",
+            "https://client.example.com/jwks",
+        ],
+    ]
+    .concat();
+    assert_eq!(env.run(&both).status.code(), Some(2));
+    let secret_with_keys = [create_args("read"), vec!["--jwks-file", path]].concat();
+    assert_eq!(env.run(&secret_with_keys).status.code(), Some(2));
+    // Unreadable file, invalid JSON, no keys, a private key.
+    let missing = [args.clone(), vec!["--jwks-file", "/nonexistent/jwks.json"]].concat();
+    assert_eq!(env.run(&missing).status.code(), Some(2));
+    for (name, text) in [
+        ("bad.json", "not json".to_owned()),
+        ("empty.json", r#"{"keys":[]}"#.to_owned()),
+        (
+            "private.json",
+            JWKS.replace("\"kid\"", "\"d\":\"AQ\",\"kid\""),
+        ),
+    ] {
+        let f = dir.join(name);
+        std::fs::write(&f, text).unwrap();
+        let bad = [args.clone(), vec!["--jwks-file", f.to_str().unwrap()]].concat();
+        assert_eq!(env.run(&bad).status.code(), Some(2), "{name}");
+    }
+    // 11 keys.
+    let keys: Vec<String> = (0..11)
+        .map(|i| {
+            JWKS.trim_start_matches(r#"{"keys":["#)
+                .trim_end_matches("]}")
+                .replace("k1", &format!("k{i}"))
+        })
+        .collect();
+    let many = dir.join("many.json");
+    std::fs::write(&many, format!(r#"{{"keys":[{}]}}"#, keys.join(","))).unwrap();
+    let eleven = [args.clone(), vec!["--jwks-file", many.to_str().unwrap()]].concat();
+    assert_eq!(env.run(&eleven).status.code(), Some(2));
+    // A plain http jwks_uri.
+    let http = [
+        args.clone(),
+        vec!["--jwks-uri", "http://client.example.com/jwks"],
+    ]
+    .concat();
+    assert_eq!(env.run(&http).status.code(), Some(2));
+    // rotate-secret does not apply.
+    assert_eq!(
+        env.run(&["client", "rotate-secret", &id]).status.code(),
+        Some(2)
+    );
+    std::fs::remove_dir_all(dir).ok();
+}

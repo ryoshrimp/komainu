@@ -2,7 +2,7 @@
 
 use clap::ValueEnum;
 use komainu::application::{ClientView, UserView};
-use komainu::domain::OpaqueToken;
+use komainu::domain::{ClientKeys, OpaqueToken};
 use serde::Serialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -25,6 +25,41 @@ fn status(active: bool) -> &'static str {
 }
 
 #[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum KeysJson {
+    Jwks { jwks: serde_json::Value },
+    JwksUri { jwks_uri: String },
+}
+
+impl KeysJson {
+    fn new(keys: &ClientKeys) -> Self {
+        match keys {
+            ClientKeys::Jwks(doc) => Self::Jwks {
+                jwks: serde_json::from_str(doc.as_str())
+                    .unwrap_or_else(|_| serde_json::Value::String(doc.as_str().to_owned())),
+            },
+            ClientKeys::JwksUri(uri) => Self::JwksUri {
+                jwks_uri: uri.as_str().to_owned(),
+            },
+        }
+    }
+}
+
+/// One line of `show` text output: `keys: jwks (N keys)` or `keys: jwks_uri <URL>`.
+fn keys_line(keys: &ClientKeys) -> String {
+    match keys {
+        ClientKeys::Jwks(doc) => {
+            let count = serde_json::from_str::<serde_json::Value>(doc.as_str())
+                .ok()
+                .and_then(|v| v.get("keys").and_then(|k| k.as_array().map(Vec::len)))
+                .unwrap_or(0);
+            format!("keys: jwks ({count} keys)")
+        }
+        ClientKeys::JwksUri(uri) => format!("keys: jwks_uri {}", uri.as_str()),
+    }
+}
+
+#[derive(Serialize)]
 struct ClientJson<'a> {
     client_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -37,6 +72,7 @@ struct ClientJson<'a> {
     allowed_scopes: Vec<&'a str>,
     default_scopes: Vec<&'a str>,
     skip_consent: bool,
+    keys: Option<KeysJson>,
     active: bool,
     created_at: String,
     updated_at: String,
@@ -55,6 +91,7 @@ impl<'a> ClientJson<'a> {
             allowed_scopes: view.allowed_scopes.iter().map(|s| s.as_str()).collect(),
             default_scopes: view.default_scopes.iter().map(|s| s.as_str()).collect(),
             skip_consent: view.skip_consent,
+            keys: view.keys.as_ref().map(KeysJson::new),
             active: view.active,
             created_at: rfc3339(view.created_at),
             updated_at: rfc3339(view.updated_at),
@@ -140,6 +177,9 @@ pub fn print_client_details(format: OutputFormat, view: &ClientView) -> Result<(
             println!("allowed_scopes: {}", view.allowed_scopes);
             println!("default_scopes: {}", view.default_scopes);
             println!("skip_consent: {}", view.skip_consent);
+            if let Some(keys) = &view.keys {
+                println!("{}", keys_line(keys));
+            }
             println!("active: {}", view.active);
             println!("created_at: {}", rfc3339(view.created_at));
             println!("updated_at: {}", rfc3339(view.updated_at));

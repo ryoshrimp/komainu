@@ -115,6 +115,7 @@ mod flow {
                     allowed_scopes: ScopeSet::parse("read").unwrap(),
                     default_scopes: ScopeSet::parse("read").unwrap(),
                     skip_consent: false,
+                    keys: None,
                 },
             )
             .await
@@ -387,5 +388,25 @@ mod flow {
         let served: serde_json::Value = serde_json::from_slice(reply.body.as_bytes()).unwrap();
         assert_eq!(served, serde_json::to_value(komainu.metadata()).unwrap());
         assert_eq!(served["issuer"], BASE);
+    }
+
+    #[tokio::test]
+    async fn http_config_alone_enables_private_key_jwt_in_the_metadata() {
+        let komainu = builder().build().unwrap();
+        let reply = komainu
+            .router()
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/oauth-authorization-server")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), StatusCode::OK);
+        let bytes = reply.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(text.contains("private_key_jwt"), "{text}");
+        assert!(text.contains("\"RS256\""), "{text}");
     }
 }

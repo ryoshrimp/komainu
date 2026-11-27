@@ -4,7 +4,7 @@ mod common;
 
 use common::*;
 use komainu_application::{AuditKind, TokenError, TokenRequest};
-use komainu_domain::{GrantType, ScopeSet};
+use komainu_domain::{ClientKeys, GrantType, ScopeSet};
 use time::Duration;
 
 /// Registers a client with all grants, a user, and returns an authorization code.
@@ -34,6 +34,7 @@ fn token_request_debug_redacts_secrets() {
         text,
         "TokenRequest { grant_type: Some(\"authorization_code\"), code: Some([REDACTED]), \
          redirect_uri: None, scope: None, refresh_token: Some([REDACTED]), code_verifier: Some([REDACTED]), \
+         assertion: None, \
          duplicated: [] }"
     );
     assert!(
@@ -645,4 +646,231 @@ fn exchange_futures_are_send() {
             .exchange(&ctx(), client.basic(), TokenRequest::default()),
     );
     assert_send(&fx.token.verify_access_token("x"));
+}
+
+// ---- private_key_jwt (F-2, F-3) ----
+
+fn cc_request() -> TokenRequest {
+    grant_request("client_credentials", Some("read"))
+}
+
+fn token_with(
+    fx: &Fixture,
+    auth: komainu_application::ClientAuthentication,
+) -> Result<komainu_application::TokenResponse, TokenError> {
+    exchange(fx, auth, cc_request())
+}
+
+#[test]
+fn private_key_jwt_authenticates_and_replay_is_rejected() {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let jwt = assertion(&fx, &key, &id, "jti-1");
+    let res = token_with(&fx, assertion_auth(Some(&id), jwt.clone())).unwrap();
+    assert_eq!(res.token_type, "Bearer");
+    // The same assertion a second time is a replay.
+    let err = token_with(&fx, assertion_auth(None, jwt)).unwrap_err();
+    assert!(matches!(
+        err,
+        TokenError::InvalidClient {
+            basic_attempted: false
+        }
+    ));
+    assert_eq!(failure_reasons(&fx), ["replay"]);
+    let event = &fx.env.store.audit_events().into_iter().last().unwrap();
+    assert_eq!(
+        event.details.get("method").map(String::as_str),
+        Some("private_key_jwt")
+    );
+}
+
+#[test]
+fn private_key_jwt_failures_are_audited_with_a_reason() {
+    let (fx, fetcher) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let other = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let secret_client = register(&fx, confidential(&ALL_GRANTS));
+    let invalid = |r: Result<_, TokenError>| {
+        assert!(matches!(r, Err(TokenError::InvalidClient { .. })), "{r:?}")
+    };
+    let cid = id.as_inner();
+    // Signature by another key.
+    invalid(token_with(
+        &fx,
+        assertion_auth(None, assertion_with(&fx, &other, cid, cid, "a", ISSUER, 60)),
+    ));
+    // iss != sub.
+    invalid(token_with(
+        &fx,
+        assertion_auth(None, assertion_with(&fx, &key, cid, "x", "b", ISSUER, 60)),
+    ));
+    // Unknown client.
+    invalid(token_with(
+        &fx,
+        assertion_auth(
+            None,
+            assertion_with(&fx, &key, "nobody", "nobody", "c", ISSUER, 60),
+        ),
+    ));
+    // Wrong audience.
+    invalid(token_with(
+        &fx,
+        assertion_auth(
+            None,
+            assertion_with(&fx, &key, cid, cid, "d", "https://x", 60),
+        ),
+    ));
+    // Not a JWT.
+    invalid(token_with(&fx, assertion_auth(None, "garbage".to_owned())));
+    // A client using another method.
+    let sid = secret_client.id.as_inner();
+    invalid(token_with(
+        &fx,
+        assertion_auth(None, assertion_with(&fx, &key, sid, sid, "e", ISSUER, 60)),
+    ));
+    assert_eq!(
+        failure_reasons(&fx),
+        [
+            "signature",
+            "subject_mismatch",
+            "unknown_client",
+            "audience",
+            "malformed",
+            "method_not_allowed"
+        ]
+    );
+    // Disabled client.
+    block_on(fx.admin.disable_client(&ctx(), &id)).unwrap();
+    invalid(token_with(
+        &fx,
+        assertion_auth(None, assertion_with(&fx, &key, cid, cid, "f", ISSUER, 60)),
+    ));
+    assert_eq!(failure_reasons(&fx).last().unwrap(), "client_disabled");
+    // No fetch happened for a jwks client.
+    assert_eq!(fetcher.calls(&jwks_uri()), 0);
+}
+
+#[test]
+fn private_key_jwt_client_id_mismatch_is_invalid_request() {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let other = register(&fx, confidential(&ALL_GRANTS));
+    let jwt = assertion(&fx, &key, &id, "j");
+    let err = token_with(&fx, assertion_auth(Some(&other.id), jwt)).unwrap_err();
+    assert!(matches!(err, TokenError::InvalidRequest));
+    assert!(failure_reasons(&fx).is_empty());
+}
+
+#[test]
+fn private_key_jwt_without_issuer_is_not_configured() {
+    let fx = Fixture::new();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let jwt = assertion(&fx, &key, &id, "j");
+    assert!(token_with(&fx, assertion_auth(None, jwt)).is_err());
+    assert_eq!(failure_reasons(&fx), ["not_configured"]);
+}
+
+#[test]
+fn jwks_uri_client_fetches_and_refreshes_on_unknown_kid() {
+    let (fx, fetcher) = assertion_fixture();
+    let old = key_with_kid("old");
+    let new = key_with_kid("new");
+    let uri = jwks_uri();
+    fetcher.set(&uri, Ok(jwks_json(&[&old])));
+    let id = register_private_key_jwt(&fx, ClientKeys::JwksUri(uri.clone()));
+    token_with(&fx, assertion_auth(None, assertion(&fx, &old, &id, "1"))).unwrap();
+    assert_eq!(fetcher.calls(&uri), 1);
+    // The key is rotated; within a minute of the last fetch no refetch is allowed.
+    fetcher.set(&uri, Ok(jwks_json(&[&new])));
+    let r = token_with(&fx, assertion_auth(None, assertion(&fx, &new, &id, "2")));
+    assert!(r.is_err());
+    assert_eq!(fetcher.calls(&uri), 1);
+    // After 60 seconds the unknown kid triggers one refetch.
+    fx.env.clock.advance(Duration::seconds(61));
+    token_with(&fx, assertion_auth(None, assertion(&fx, &new, &id, "3"))).unwrap();
+    assert_eq!(fetcher.calls(&uri), 2);
+}
+
+#[test]
+fn jwks_uri_fetch_failure_is_key_fetch_failed() {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k");
+    let id = register_private_key_jwt(&fx, ClientKeys::JwksUri(jwks_uri()));
+    // The URI has no configured response (404).
+    assert!(token_with(&fx, assertion_auth(None, assertion(&fx, &key, &id, "1"))).is_err());
+    assert_eq!(failure_reasons(&fx), ["key_fetch_failed"]);
+    // No fetcher at all.
+    let fx2 = Fixture::with_config(config().with_issuer(ISSUER));
+    let id2 = register_private_key_jwt(&fx2, ClientKeys::JwksUri(jwks_uri()));
+    assert!(token_with(&fx2, assertion_auth(None, assertion(&fx2, &key, &id2, "1"))).is_err());
+    assert_eq!(failure_reasons(&fx2), ["key_fetch_failed"]);
+}
+
+#[test]
+fn assertion_with_token_endpoint_audience_is_accepted() {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let cid = id.as_inner();
+    let aud = format!("{ISSUER}/token");
+    let jwt = assertion_with(&fx, &key, cid, cid, "aud-token", &aud, 60);
+    token_with(&fx, assertion_auth(None, jwt)).unwrap();
+    assert!(failure_reasons(&fx).is_empty());
+}
+
+#[test]
+fn assertion_debug_never_shows_the_body() {
+    let body = "eyJhbGciOiJFUzI1NiJ9.SECRET-BODY.sig";
+    let req = TokenRequest {
+        assertion: Some(body.to_owned()),
+        ..TokenRequest::default()
+    };
+    let text = format!("{req:?}");
+    assert!(!text.contains("SECRET-BODY"), "{text}");
+    assert!(text.contains("assertion: Some([REDACTED])"), "{text}");
+    let auth = komainu_application::ClientAuthentication::Assertion {
+        client_id: Some("c".to_owned()),
+        assertion: komainu_domain::Secret::new(body.to_owned()),
+    };
+    assert!(!format!("{auth:?}").contains("SECRET-BODY"));
+}
+
+#[test]
+fn unsigned_and_expired_assertions_are_rejected_with_reasons() {
+    use base64::Engine;
+    use komainu_application::Clock;
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let cid = id.as_inner();
+    // alg=none with every claim valid: only the missing signature can reject it.
+    let exp = fx.env.clock.now().unix_timestamp() + 60;
+    let payload =
+        format!(r#"{{"iss":"{cid}","sub":"{cid}","aud":"{ISSUER}","exp":{exp},"jti":"none-1"}}"#);
+    let none = format!(
+        "{}.{}.",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload),
+    );
+    assert!(matches!(
+        token_with(&fx, assertion_auth(Some(&id), none)),
+        Err(TokenError::InvalidClient { .. })
+    ));
+    // Expired beyond the leeway.
+    let expired = assertion_with(&fx, &key, cid, cid, "old", ISSUER, -300);
+    assert!(matches!(
+        token_with(&fx, assertion_auth(None, expired)),
+        Err(TokenError::InvalidClient { .. })
+    ));
+    let reasons = failure_reasons(&fx);
+    assert_eq!(reasons.len(), 2);
+    assert_eq!(reasons[1], "expired");
+    assert!(
+        ["malformed", "signature"].contains(&reasons[0].as_str()),
+        "{reasons:?}"
+    );
 }

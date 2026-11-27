@@ -1,12 +1,13 @@
 //! `komainu client ...`
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 use komainu::application::{AdminService, ListPage, RegisterClient};
 use komainu::domain::{
-    ClientId, ClientName, ClientType, ClientUpdate, GrantType, RedirectUri, ScopeSet,
-    TokenEndpointAuthMethod,
+    ClientId, ClientKeys, ClientName, ClientType, ClientUpdate, GrantType, JwksDocument, JwksUri,
+    RedirectUri, ScopeSet, TokenEndpointAuthMethod,
 };
 
 use super::admin_exit;
@@ -15,7 +16,12 @@ use crate::Exit;
 use crate::wiring::background_context;
 
 const CLIENT_TYPES: [&str; 2] = ["confidential", "public"];
-const AUTH_METHODS: [&str; 3] = ["client_secret_basic", "client_secret_post", "none"];
+const AUTH_METHODS: [&str; 4] = [
+    "client_secret_basic",
+    "client_secret_post",
+    "private_key_jwt",
+    "none",
+];
 const GRANT_TYPES: [&str; 3] = ["authorization_code", "client_credentials", "refresh_token"];
 
 #[derive(Debug, Subcommand)]
@@ -73,6 +79,12 @@ pub struct CreateArgs {
     default_scope: Option<String>,
     #[arg(long)]
     skip_consent: bool,
+    /// JWK Set file with the public keys (private_key_jwt).
+    #[arg(long, value_name = "PATH", conflicts_with = "jwks_uri")]
+    jwks_file: Option<PathBuf>,
+    /// URL of the client's JWK Set (private_key_jwt).
+    #[arg(long, value_name = "URL")]
+    jwks_uri: Option<String>,
     #[arg(long, value_enum, default_value = "text")]
     output: OutputFormat,
 }
@@ -101,8 +113,33 @@ pub struct UpdateArgs {
     skip_consent: Option<bool>,
     #[arg(long, value_parser = AUTH_METHODS)]
     auth_method: Option<String>,
+    /// JWK Set file with the public keys (private_key_jwt).
+    #[arg(long, value_name = "PATH", conflicts_with = "jwks_uri")]
+    jwks_file: Option<PathBuf>,
+    /// URL of the client's JWK Set (private_key_jwt).
+    #[arg(long, value_name = "URL")]
+    jwks_uri: Option<String>,
     #[arg(long, value_enum, default_value = "text")]
     output: OutputFormat,
+}
+
+/// The key source given on the command line, if any. A file is read here; whether it is a
+/// usable JWK Set is checked by the use case.
+fn client_keys(
+    jwks_file: Option<&PathBuf>,
+    jwks_uri: Option<&String>,
+) -> Result<Option<ClientKeys>, Exit> {
+    if let Some(path) = jwks_file {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| Exit::new(2, format!("cannot read {}: {e}", path.display())))?;
+        let doc = JwksDocument::try_new(text).map_err(Exit::usage)?;
+        return Ok(Some(ClientKeys::Jwks(doc)));
+    }
+    if let Some(uri) = jwks_uri {
+        let uri = JwksUri::try_new(uri.clone()).map_err(Exit::usage)?;
+        return Ok(Some(ClientKeys::JwksUri(uri)));
+    }
+    Ok(None)
 }
 
 fn parse<T: std::str::FromStr<Err = komainu::domain::DomainError>>(value: &str) -> Result<T, Exit> {
@@ -150,6 +187,14 @@ pub async fn run(admin: &AdminService, command: ClientCommand) -> Result<(), Exi
             } else {
                 grant_types(&args.grant_types)?
             };
+            let keys = client_keys(args.jwks_file.as_ref(), args.jwks_uri.as_ref())?;
+            let private_key_jwt = auth_method == TokenEndpointAuthMethod::PrivateKeyJwt;
+            if private_key_jwt != keys.is_some() {
+                return Err(Exit::new(
+                    2,
+                    "exactly one of --jwks-file and --jwks-uri is required with, and only allowed with, --auth-method private_key_jwt",
+                ));
+            }
             let input = RegisterClient {
                 name: ClientName::try_new(args.name).map_err(Exit::usage)?,
                 client_type,
@@ -159,6 +204,7 @@ pub async fn run(admin: &AdminService, command: ClientCommand) -> Result<(), Exi
                 allowed_scopes: scopes(args.scope.as_deref().unwrap_or(""))?,
                 default_scopes: scopes(args.default_scope.as_deref().unwrap_or(""))?,
                 skip_consent: args.skip_consent,
+                keys,
             };
             let registered = admin
                 .register_client(&ctx, input)
@@ -211,7 +257,7 @@ pub async fn run(admin: &AdminService, command: ClientCommand) -> Result<(), Exi
                 default_scopes: args.default_scope.as_deref().map(scopes).transpose()?,
                 skip_consent: args.skip_consent,
                 auth_method: args.auth_method.as_deref().map(parse).transpose()?,
-                keys: None,
+                keys: client_keys(args.jwks_file.as_ref(), args.jwks_uri.as_ref())?,
             };
             let view = admin
                 .update_client(&ctx, &id, update)

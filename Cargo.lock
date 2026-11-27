@@ -2051,6 +2051,7 @@ version = "0.1.0-alpha.3"
 dependencies = [
  "axum",
  "http-body-util",
+ "komainu-adapter-http",
  "komainu-adapter-postgres",
  "komainu-adapter-std",
  "komainu-application",
@@ -2144,6 +2145,7 @@ dependencies = [
  "http-body-util",
  "komainu-application",
  "komainu-domain",
+ "komainu-jose",
  "komainu-testkit",
  "metrics",
  "serde",

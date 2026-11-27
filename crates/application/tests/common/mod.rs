@@ -98,6 +98,7 @@ pub fn confidential(grant_types: &[GrantType]) -> RegisterClient {
         allowed_scopes: scopes("read write"),
         default_scopes: scopes("read"),
         skip_consent: false,
+        keys: None,
     }
 }
 
@@ -245,3 +246,127 @@ pub const ALL_GRANTS: [GrantType; 3] = [
     GrantType::ClientCredentials,
     GrantType::RefreshToken,
 ];
+
+// ---- private_key_jwt ----
+
+pub const ISSUER: &str = "https://as.example.com";
+
+use std::sync::Arc;
+
+use komainu_application::Clock;
+use komainu_domain::{ClientKeys, JwksDocument, JwksUri};
+use komainu_jose::jwt::{self, Audience, Claims, NoCustomClaims, RegisteredClaims};
+use komainu_jose::{JwkSet, Kid, SigningKey};
+use komainu_testkit::StaticJwksFetcher;
+use time::Duration;
+
+/// A fixture with `issuer` set and a [`StaticJwksFetcher`].
+pub fn assertion_fixture() -> (Fixture, StaticJwksFetcher) {
+    let fetcher = StaticJwksFetcher::new();
+    let config = config().with_issuer(ISSUER);
+    let env = TestEnv::new(config).with_jwks_fetcher(Arc::new(fetcher.clone()));
+    let deps = env.deps.clone();
+    let fx = Fixture {
+        admin: AdminService::new(deps.clone()),
+        authz: AuthorizationService::new(deps.clone()),
+        token: TokenService::new(deps.clone()),
+        maintenance: MaintenanceService::new(deps),
+        env,
+    };
+    (fx, fetcher)
+}
+
+pub fn key_with_kid(kid: &str) -> SigningKey {
+    SigningKey::generate_es256()
+        .unwrap()
+        .with_kid(Kid::try_new(kid.to_owned()).unwrap())
+}
+
+pub fn jwks_json(keys: &[&SigningKey]) -> String {
+    JwkSet::new(keys.iter().map(|k| k.verifying_key()).collect())
+        .unwrap()
+        .to_json()
+}
+
+pub fn jwks_keys(keys: &[&SigningKey]) -> ClientKeys {
+    ClientKeys::Jwks(JwksDocument::try_new(jwks_json(keys)).unwrap())
+}
+
+pub fn jwks_uri() -> JwksUri {
+    JwksUri::try_new("https://client.example.com/jwks".to_owned()).unwrap()
+}
+
+pub fn private_key_jwt(keys: ClientKeys) -> RegisterClient {
+    RegisterClient {
+        auth_method: TokenEndpointAuthMethod::PrivateKeyJwt,
+        keys: Some(keys),
+        ..confidential(&ALL_GRANTS)
+    }
+}
+
+pub fn register_private_key_jwt(fx: &Fixture, keys: ClientKeys) -> ClientId {
+    block_on(fx.admin.register_client(&ctx(), private_key_jwt(keys)))
+        .unwrap()
+        .client
+        .id
+}
+
+/// A client assertion for `client` that expires `lifetime` from now.
+pub fn assertion(fx: &Fixture, key: &SigningKey, client: &ClientId, jti: &str) -> String {
+    assertion_with(
+        fx,
+        key,
+        client.as_inner(),
+        client.as_inner(),
+        jti,
+        ISSUER,
+        60,
+    )
+}
+
+pub fn assertion_with(
+    fx: &Fixture,
+    key: &SigningKey,
+    iss: &str,
+    sub: &str,
+    jti: &str,
+    aud: &str,
+    lifetime_secs: i64,
+) -> String {
+    let now = fx.env.clock.now();
+    jwt::encode(
+        &Claims {
+            registered: RegisteredClaims {
+                iss: Some(iss.to_owned()),
+                sub: Some(sub.to_owned()),
+                aud: Some(Audience::One(aud.to_owned())),
+                exp: Some(now + Duration::seconds(lifetime_secs)),
+                nbf: None,
+                iat: None,
+                jti: Some(jti.to_owned()),
+            },
+            custom: NoCustomClaims,
+        },
+        key,
+        &komainu_jose::jws::SignOptions::new(),
+    )
+    .unwrap()
+}
+
+pub fn assertion_auth(client_id: Option<&ClientId>, assertion: String) -> ClientAuthentication {
+    ClientAuthentication::Assertion {
+        client_id: client_id.map(|id| id.as_inner().to_owned()),
+        assertion: Secret::new(assertion),
+    }
+}
+
+/// `details["reason"]` of every `client_authentication.failed` event.
+pub fn failure_reasons(fx: &Fixture) -> Vec<String> {
+    fx.env
+        .store
+        .audit_events()
+        .into_iter()
+        .filter(|e| e.kind == komainu_application::AuditKind::ClientAuthenticationFailed)
+        .map(|e| e.details.get("reason").cloned().unwrap_or_default())
+        .collect()
+}

@@ -155,6 +155,7 @@ pub fn confidential(grants: &[GrantType]) -> RegisterClient {
         allowed_scopes: ScopeSet::parse("read write").unwrap(),
         default_scopes: ScopeSet::parse("read").unwrap(),
         skip_consent: false,
+        keys: None,
     }
 }
 

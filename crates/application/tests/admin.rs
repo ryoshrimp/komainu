@@ -219,3 +219,82 @@ fn user_and_client_crud_and_listing() {
     let dump = format!("{:?}", fx.env.store.audit_events());
     assert!(!dump.contains(PASSWORD) && !dump.contains("another password"));
 }
+
+// ---- private_key_jwt keys (F-1) ----
+
+mod keys {
+    use super::*;
+    use komainu_application::{AdminError, RegisterClient};
+    use komainu_domain::{ClientKeys, ClientUpdate, JwksDocument, TokenEndpointAuthMethod};
+
+    #[test]
+    fn private_key_jwt_client_has_no_secret_and_keeps_keys() {
+        let fx = Fixture::new();
+        let key = key_with_kid("k1");
+        let registered = block_on(
+            fx.admin
+                .register_client(&ctx(), private_key_jwt(jwks_keys(&[&key]))),
+        )
+        .unwrap();
+        assert!(registered.secret.is_none());
+        assert_eq!(
+            registered.client.auth_method,
+            TokenEndpointAuthMethod::PrivateKeyJwt
+        );
+        assert!(matches!(registered.client.keys, Some(ClientKeys::Jwks(_))));
+        // The uri form is accepted without fetching.
+        let by_uri = block_on(
+            fx.admin
+                .register_client(&ctx(), private_key_jwt(ClientKeys::JwksUri(jwks_uri()))),
+        )
+        .unwrap();
+        assert!(matches!(by_uri.client.keys, Some(ClientKeys::JwksUri(_))));
+    }
+
+    #[test]
+    fn secret_clients_still_get_a_secret() {
+        let fx = Fixture::new();
+        let r = block_on(fx.admin.register_client(&ctx(), confidential(&ALL_GRANTS))).unwrap();
+        assert!(r.secret.is_some());
+    }
+
+    fn invalid(doc: String) -> RegisterClient {
+        private_key_jwt(ClientKeys::Jwks(JwksDocument::try_new(doc).unwrap()))
+    }
+
+    #[test]
+    fn unusable_jwks_is_rejected() {
+        let fx = Fixture::new();
+        let empty = r#"{"keys":[]}"#.to_owned();
+        let err = block_on(fx.admin.register_client(&ctx(), invalid(empty))).unwrap_err();
+        assert!(matches!(err, AdminError::InvalidJwks(_)), "{err:?}");
+        let many: Vec<_> = (0..11).map(|i| key_with_kid(&format!("k{i}"))).collect();
+        let refs: Vec<_> = many.iter().collect();
+        let err =
+            block_on(fx.admin.register_client(&ctx(), invalid(jwks_json(&refs)))).unwrap_err();
+        assert!(matches!(err, AdminError::InvalidJwks(_)), "{err:?}");
+        let ten = &refs[..10];
+        block_on(fx.admin.register_client(&ctx(), invalid(jwks_json(ten)))).unwrap();
+    }
+
+    #[test]
+    fn update_replaces_and_validates_keys() {
+        let fx = Fixture::new();
+        let key = key_with_kid("k1");
+        let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+        let next = key_with_kid("k2");
+        let update = |keys| ClientUpdate {
+            keys: Some(keys),
+            ..ClientUpdate::default()
+        };
+        let view = block_on(
+            fx.admin
+                .update_client(&ctx(), &id, update(jwks_keys(&[&next]))),
+        )
+        .unwrap();
+        assert!(matches!(view.keys, Some(ClientKeys::Jwks(_))));
+        let bad = ClientKeys::Jwks(JwksDocument::try_new(r#"{"keys":[]}"#.to_owned()).unwrap());
+        let err = block_on(fx.admin.update_client(&ctx(), &id, update(bad))).unwrap_err();
+        assert!(matches!(err, AdminError::InvalidJwks(_)));
+    }
+}

@@ -68,3 +68,37 @@ fn token_service_reports_the_same_capabilities() {
         ServerCapabilities::from_config(&cfg)
     );
 }
+
+#[test]
+fn issuer_adds_private_key_jwt_and_algs() {
+    use komainu_jose::Algorithm;
+    let caps = ServerCapabilities::from_config(&config().with_issuer("https://as.example.com"));
+    let expected = vec![
+        TokenEndpointAuthMethod::ClientSecretBasic,
+        TokenEndpointAuthMethod::ClientSecretPost,
+        TokenEndpointAuthMethod::PrivateKeyJwt,
+    ];
+    assert_eq!(caps.token_endpoint_auth_methods, expected);
+    assert_eq!(caps.revocation_endpoint_auth_methods, expected);
+    assert_eq!(
+        caps.token_endpoint_auth_signing_algs,
+        [Algorithm::Rs256, Algorithm::Es256]
+    );
+    assert_eq!(
+        caps.revocation_endpoint_auth_signing_algs,
+        [Algorithm::Rs256, Algorithm::Es256]
+    );
+    let with_public = ServerCapabilities::from_config(
+        &config()
+            .with_issuer("https://as.example.com")
+            .with_allow_public_clients(true),
+    );
+    assert_eq!(
+        with_public.token_endpoint_auth_methods.last(),
+        Some(&TokenEndpointAuthMethod::None)
+    );
+    // Without an issuer nothing about assertions is advertised.
+    let plain = ServerCapabilities::from_config(&config());
+    assert!(plain.token_endpoint_auth_signing_algs.is_empty());
+    assert!(!plain.grant_types.contains(&GrantType::JwtBearer));
+}

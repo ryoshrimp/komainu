@@ -42,7 +42,8 @@ pub(crate) enum Freshness {
 }
 
 pub(crate) enum KeyResolveError {
-    Fetch(JwksFetchError),
+    // The cause is not reported yet (audit reasons are coarse); only tests read it.
+    Fetch(#[cfg_attr(not(test), expect(dead_code))] JwksFetchError),
     /// The body is not a JWKS, or has no keys.
     InvalidJwks,
     RefetchTooSoon,

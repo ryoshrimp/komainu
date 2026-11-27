@@ -14,6 +14,9 @@ pub enum AdminError {
     /// `client_type=public` while `allow_public_clients=false`.
     #[error("public clients are disabled")]
     PublicClientsDisabled,
+    /// `jwks` is not a usable JWK Set (parse failure, private key, or not 1 to 10 keys).
+    #[error("invalid jwks: {0}")]
+    InvalidJwks(String),
     #[error("not found")]
     NotFound,
     /// Duplicate username.

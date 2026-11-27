@@ -5,10 +5,11 @@ mod error;
 use std::collections::BTreeSet;
 
 use komainu_domain::{
-    Client, ClientId, ClientName, ClientType, ClientUpdate, GrantType, NewClient, NewPassword,
-    OpaqueToken, RedirectUri, RevocationReason, ScopeSet, TokenEndpointAuthMethod, User, UserId,
-    Username,
+    Client, ClientId, ClientKeys, ClientName, ClientType, ClientUpdate, GrantType, NewClient,
+    NewPassword, OpaqueToken, RedirectUri, RevocationReason, ScopeSet, TokenEndpointAuthMethod,
+    User, UserId, Username,
 };
+use komainu_jose::JwkSet;
 use time::OffsetDateTime;
 
 pub use error::AdminError;
@@ -31,6 +32,8 @@ pub struct RegisterClient {
     pub allowed_scopes: ScopeSet,
     pub default_scopes: ScopeSet,
     pub skip_consent: bool,
+    /// Required for `private_key_jwt`, forbidden otherwise.
+    pub keys: Option<ClientKeys>,
 }
 
 /// Read model of a client. Never contains the secret hash.
@@ -45,6 +48,7 @@ pub struct ClientView {
     pub allowed_scopes: ScopeSet,
     pub default_scopes: ScopeSet,
     pub skip_consent: bool,
+    pub keys: Option<ClientKeys>,
     pub active: bool,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -62,6 +66,7 @@ impl ClientView {
             allowed_scopes: client.allowed_scopes().clone(),
             default_scopes: client.default_scopes().clone(),
             skip_consent: client.skip_consent(),
+            keys: client.keys().cloned(),
             active: client.is_active(),
             created_at: client.created_at(),
             updated_at: client.updated_at(),
@@ -119,6 +124,21 @@ impl AdminService {
         Ok(())
     }
 
+    /// A `jwks` document must hold 1 to 10 usable public keys. `jwks_uri` is not fetched here.
+    fn check_keys(keys: Option<&ClientKeys>) -> Result<(), AdminError> {
+        if let Some(ClientKeys::Jwks(doc)) = keys {
+            let set = JwkSet::from_json(doc.as_str())
+                .map_err(|e| AdminError::InvalidJwks(e.to_string()))?;
+            let count = set.keys().len();
+            if !(1..=10).contains(&count) {
+                return Err(AdminError::InvalidJwks(format!(
+                    "expected 1 to 10 usable keys, found {count}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     async fn load_client(uow: &mut dyn UnitOfWork, id: &ClientId) -> Result<Client, AdminError> {
         uow.clients()
             .find_for_update(id)
@@ -149,8 +169,12 @@ impl AdminService {
             return Err(AdminError::PublicClientsDisabled);
         }
         self.check_scopes(&input.allowed_scopes)?;
-        let secret = (input.client_type == ClientType::Confidential)
-            .then(|| new_opaque_token(deps.random.as_ref()));
+        Self::check_keys(input.keys.as_ref())?;
+        let secret = matches!(
+            input.auth_method,
+            TokenEndpointAuthMethod::ClientSecretBasic | TokenEndpointAuthMethod::ClientSecretPost
+        )
+        .then(|| new_opaque_token(deps.random.as_ref()));
         let id =
             ClientId::try_new(new_uuid_v7(deps.clock.as_ref(), deps.random.as_ref()).to_string())?;
         let mut client = Client::register(
@@ -164,7 +188,7 @@ impl AdminService {
                 allowed_scopes: input.allowed_scopes,
                 default_scopes: input.default_scopes,
                 skip_consent: input.skip_consent,
-                keys: None,
+                keys: input.keys,
             },
             secret.as_ref().map(OpaqueToken::hash),
             deps.clock.now(),
@@ -189,6 +213,7 @@ impl AdminService {
         if let Some(scopes) = &update.allowed_scopes {
             self.check_scopes(scopes)?;
         }
+        Self::check_keys(update.keys.as_ref())?;
         let mut uow = deps.store.begin().await?;
         let mut client = Self::load_client(uow.as_mut(), id).await?;
         client.update(update, deps.clock.now())?;
