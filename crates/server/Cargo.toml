@@ -37,7 +37,7 @@ figment = { workspace = true, features = ["test"] }
 assert_cmd.workspace = true
 predicates.workspace = true
 url.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["cookies"] }
 testcontainers-modules.workspace = true
 komainu-testkit.workspace = true
 sqlx.workspace = true

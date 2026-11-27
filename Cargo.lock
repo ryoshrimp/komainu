@@ -2065,6 +2065,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "komainu-adapter-http"
+version = "0.1.0-alpha.3"
+dependencies = [
+ "axum",
+ "komainu-application",
+ "komainu-domain",
+ "reqwest",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "komainu-adapter-postgres"
 version = "0.1.0-alpha.3"
 dependencies = [

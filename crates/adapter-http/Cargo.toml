@@ -1,0 +1,25 @@
+[package]
+name = "komainu-adapter-http"
+description = "SSRF-safe JWKS fetcher adapter for komainu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["oauth2", "jwks", "ssrf", "authentication"]
+categories = ["authentication", "web-programming::http-client"]
+
+[dependencies]
+komainu-application.workspace = true
+komainu-domain.workspace = true
+reqwest.workspace = true
+tokio = { workspace = true, features = ["net"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+axum.workspace = true
