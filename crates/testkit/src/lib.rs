@@ -6,12 +6,14 @@
 mod clock;
 pub mod conformance;
 mod env;
+mod jwks;
 mod password;
 mod random;
 mod store;
 
 pub use clock::FixedClock;
 pub use env::TestEnv;
+pub use jwks::StaticJwksFetcher;
 pub use password::PlainPasswordHasher;
 pub use random::SequenceRandom;
 pub use store::{InMemoryState, InMemoryUnitOfWorkFactory};

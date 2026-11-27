@@ -21,6 +21,7 @@ repository = "https://github.com/ryoshrimp/komainu"
 
 [workspace.dependencies]
 # Internal crates
+komainu-jose = { path = "crates/jose", version = "0.1.0-alpha.3" }
 komainu-domain = { path = "crates/domain", version = "0.1.0-alpha.3" }
 komainu-application = { path = "crates/application", version = "0.1.0-alpha.3" }
 komainu-adapter-postgres = { path = "crates/adapter-postgres", version = "0.1.0-alpha.3" }

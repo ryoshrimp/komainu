@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use komainu_application::{
     AdminService, ApplicationConfig, AuthorizationService, BuiltinAuthenticator, Clock,
-    Dependencies, MaintenanceService, PasswordHasher, ResourceOwnerAuthenticator, SecureRandom,
-    TokenService, UnitOfWorkFactory,
+    Dependencies, JwksResolver, MaintenanceService, MappingTableSubjectResolver, PasswordHasher,
+    ResourceOwnerAuthenticator, SecureRandom, TokenService, UnitOfWorkFactory,
 };
 #[cfg(feature = "http")]
 use komainu_http::{AppState, HttpConfig, ScreenRenderer};
@@ -199,6 +199,8 @@ impl KomainuBuilder {
 
         let deps = Dependencies {
             store,
+            jwks: Arc::new(JwksResolver::new(None, clock.clone())),
+            subject_resolver: Arc::new(MappingTableSubjectResolver),
             clock,
             random,
             password_hasher,

@@ -179,9 +179,12 @@ async fn corrupted_enum_value_is_other() {
 fn service(db: &TestDb) -> komainu_application::TokenService {
     use std::sync::Arc;
     let hasher = Arc::new(komainu_testkit::PlainPasswordHasher);
+    let clock: Arc<dyn komainu_application::Clock> = Arc::new(komainu_adapter_std::SystemClock);
     let deps = Dependencies {
         store: Arc::new(db.factory.clone()),
-        clock: Arc::new(komainu_adapter_std::SystemClock),
+        clock: clock.clone(),
+        jwks: Arc::new(komainu_application::JwksResolver::new(None, clock)),
+        subject_resolver: Arc::new(komainu_application::MappingTableSubjectResolver),
         random: Arc::new(komainu_adapter_std::OsSecureRandom),
         password_hasher: hasher.clone(),
         authenticator: Arc::new(BuiltinAuthenticator::new(hasher)),
@@ -318,9 +321,12 @@ async fn tokens_are_stored_hashed_only() {
         name: ScopeToken::try_new("read".to_owned()).unwrap(),
         description: "read".to_owned(),
     }]);
+    let clock: Arc<dyn komainu_application::Clock> = Arc::new(komainu_adapter_std::SystemClock);
     let deps = Dependencies {
         store: Arc::new(db.factory.clone()),
-        clock: Arc::new(komainu_adapter_std::SystemClock),
+        clock: clock.clone(),
+        jwks: Arc::new(komainu_application::JwksResolver::new(None, clock)),
+        subject_resolver: Arc::new(komainu_application::MappingTableSubjectResolver),
         random: Arc::new(komainu_adapter_std::OsSecureRandom),
         password_hasher: hasher.clone(),
         authenticator: Arc::new(BuiltinAuthenticator::new(hasher)),

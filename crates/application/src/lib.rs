@@ -6,6 +6,7 @@
 //! configuration, dependency wiring, and ID/token generation.
 
 pub mod admin;
+pub mod assertion;
 pub mod audit;
 pub mod authentication;
 pub mod authorization;
@@ -20,6 +21,10 @@ mod support;
 pub mod token;
 
 pub use admin::{AdminError, AdminService, ClientView, RegisterClient, RegisteredClient, UserView};
+pub use assertion::{
+    ASSERTION_LEEWAY, ASSERTION_MAX_LEN, ASSERTION_MAX_LIFETIME, CLIENT_ASSERTION_TYPE_JWT_BEARER,
+    GRANT_TYPE_JWT_BEARER, JWKS_CACHE_TTL, JWKS_MIN_REFETCH_INTERVAL, JwksResolver,
+};
 pub use audit::{AuditActor, AuditEvent, AuditKind, AuditOutcome};
 pub use authentication::BuiltinAuthenticator;
 pub use authorization::{

@@ -2099,6 +2099,7 @@ version = "0.1.0-alpha.3"
 dependencies = [
  "base64 0.23.1",
  "komainu-domain",
+ "komainu-jose",
  "komainu-testkit",
  "thiserror",
  "time",

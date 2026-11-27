@@ -29,6 +29,10 @@ pub struct ApplicationConfig {
     /// Expired rows are deleted this long after expiry (F-13).
     pub purge_grace: Duration,
     pub audit_retention: Duration,
+    /// The server's issuer identifier (for example `"https://as.example.com"`, no trailing `/`).
+    /// Assertions must have this value or `"{issuer}/token"` as `aud`. `None` disables
+    /// `private_key_jwt` and jwt-bearer. Defaults to `None`.
+    pub issuer: Option<String>,
 }
 
 impl ApplicationConfig {
@@ -101,6 +105,13 @@ impl ApplicationConfig {
         self.audit_retention = value;
         self
     }
+
+    /// Sets `issuer`.
+    #[must_use]
+    pub fn with_issuer(mut self, value: impl Into<String>) -> Self {
+        self.issuer = Some(value.into());
+        self
+    }
 }
 
 impl Default for ApplicationConfig {
@@ -116,6 +127,7 @@ impl Default for ApplicationConfig {
             scopes: Vec::new(),
             purge_grace: Duration::hours(24),
             audit_retention: Duration::days(90),
+            issuer: None,
         }
     }
 }
