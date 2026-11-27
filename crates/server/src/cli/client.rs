@@ -211,6 +211,7 @@ pub async fn run(admin: &AdminService, command: ClientCommand) -> Result<(), Exi
                 default_scopes: args.default_scope.as_deref().map(scopes).transpose()?,
                 skip_consent: args.skip_consent,
                 auth_method: args.auth_method.as_deref().map(parse).transpose()?,
+                keys: None,
             };
             let view = admin
                 .update_client(&ctx, &id, update)

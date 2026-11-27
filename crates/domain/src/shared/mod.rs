@@ -1,6 +1,7 @@
 //! Value objects shared by several aggregates.
 
 mod client_id;
+mod jwks;
 mod pkce;
 mod redirect_uri;
 mod scope;
@@ -9,6 +10,7 @@ mod subject;
 mod token;
 
 pub use client_id::{ClientId, ClientName};
+pub use jwks::{ClientKeys, JwksDocument, JwksUri};
 pub use pkce::{CodeChallenge, CodeChallengeMethod, CodeVerifier, PkceChallenge};
 pub use redirect_uri::RedirectUri;
 pub use scope::{ScopeSet, ScopeToken};

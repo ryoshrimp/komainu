@@ -42,6 +42,7 @@ fn from_row(row: &PgRow) -> Result<Client, StoreError> {
         allowed_scopes: scope_from_db(col(row, "allowed_scopes")?, "clients.allowed_scopes")?,
         default_scopes: scope_from_db(col(row, "default_scopes")?, "clients.default_scopes")?,
         skip_consent: col(row, "skip_consent")?,
+        keys: None,
         status: ClientStatus::from_str(&col::<String>(row, "status")?)
             .map_err(|_| corrupted("clients.status"))?,
         created_at: col(row, "created_at")?,
