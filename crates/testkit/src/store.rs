@@ -1,3 +1,4 @@
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,6 +19,10 @@ pub struct InMemoryState {
     pub grants: BTreeMap<GrantId, GrantRecord>,
     pub access_tokens: BTreeMap<TokenHash, AccessTokenRecord>,
     pub refresh_tokens: BTreeMap<TokenHash, RefreshTokenRecord>,
+    pub trusted_issuers: BTreeMap<IssuerId, TrustedIssuerRecord>,
+    pub subject_mappings: BTreeMap<(IssuerId, ExternalSubject), SubjectMapping>,
+    /// Keyed by `(kind, issuer, jti)`; the value is `expires_at`.
+    pub used_assertions: BTreeMap<(AssertionKind, String, String), OffsetDateTime>,
     pub audit_events: Vec<AuditEvent>,
 }
 
@@ -141,6 +146,15 @@ impl UnitOfWork for InMemoryUnitOfWork {
         self
     }
     fn audit_log(&mut self) -> &mut dyn AuditLogRepository {
+        self
+    }
+    fn trusted_issuers(&mut self) -> &mut dyn TrustedIssuerRepository {
+        self
+    }
+    fn subject_mappings(&mut self) -> &mut dyn SubjectMappingRepository {
+        self
+    }
+    fn used_assertions(&mut self) -> &mut dyn UsedAssertionRepository {
         self
     }
     fn purge(&mut self) -> &mut dyn PurgeRepository {
@@ -522,6 +536,123 @@ impl AuditLogRepository for InMemoryUnitOfWork {
     }
 }
 
+impl TrustedIssuerRepository for InMemoryUnitOfWork {
+    fn find(&mut self, id: &IssuerId) -> BoxFuture<'_, Result<Option<TrustedIssuer>, StoreError>> {
+        let found = self
+            .working
+            .trusted_issuers
+            .get(id)
+            .cloned()
+            .map(TrustedIssuer::from_record);
+        ready(Ok(found))
+    }
+
+    fn find_for_update(
+        &mut self,
+        id: &IssuerId,
+    ) -> BoxFuture<'_, Result<Option<TrustedIssuer>, StoreError>> {
+        TrustedIssuerRepository::find(self, id)
+    }
+
+    fn insert(&mut self, issuer: &TrustedIssuer) -> BoxFuture<'_, Result<(), StoreError>> {
+        let record = issuer.to_record();
+        ready(insert_unique(
+            &mut self.working.trusted_issuers,
+            record.id.clone(),
+            record,
+        ))
+    }
+
+    fn update(&mut self, issuer: &TrustedIssuer) -> BoxFuture<'_, Result<(), StoreError>> {
+        let record = issuer.to_record();
+        ready(replace_existing(
+            &mut self.working.trusted_issuers,
+            record.id.clone(),
+            record,
+            "trusted issuer",
+        ))
+    }
+
+    fn list(
+        &mut self,
+        page: &ListPage<IssuerId>,
+    ) -> BoxFuture<'_, Result<Vec<TrustedIssuer>, StoreError>> {
+        let items = self
+            .working
+            .trusted_issuers
+            .iter()
+            .filter(|(id, _)| page.after.as_ref().is_none_or(|after| *id > after))
+            .take(page.limit as usize)
+            .map(|(_, r)| TrustedIssuer::from_record(r.clone()))
+            .collect();
+        ready(Ok(items))
+    }
+}
+
+impl SubjectMappingRepository for InMemoryUnitOfWork {
+    fn find(
+        &mut self,
+        issuer_id: &IssuerId,
+        subject: &ExternalSubject,
+    ) -> BoxFuture<'_, Result<Option<SubjectMapping>, StoreError>> {
+        let key = (issuer_id.clone(), subject.clone());
+        ready(Ok(self.working.subject_mappings.get(&key).cloned()))
+    }
+
+    fn upsert(&mut self, mapping: &SubjectMapping) -> BoxFuture<'_, Result<(), StoreError>> {
+        let key = (mapping.issuer_id.clone(), mapping.subject.clone());
+        self.working.subject_mappings.insert(key, mapping.clone());
+        ready(Ok(()))
+    }
+
+    fn delete(
+        &mut self,
+        issuer_id: &IssuerId,
+        subject: &ExternalSubject,
+    ) -> BoxFuture<'_, Result<bool, StoreError>> {
+        let key = (issuer_id.clone(), subject.clone());
+        ready(Ok(self.working.subject_mappings.remove(&key).is_some()))
+    }
+
+    fn list_by_issuer(
+        &mut self,
+        issuer_id: &IssuerId,
+        page: &ListPage<ExternalSubject>,
+    ) -> BoxFuture<'_, Result<Vec<SubjectMapping>, StoreError>> {
+        let items = self
+            .working
+            .subject_mappings
+            .values()
+            .filter(|m| m.issuer_id == *issuer_id)
+            .filter(|m| page.after.as_ref().is_none_or(|after| m.subject > *after))
+            .take(page.limit as usize)
+            .cloned()
+            .collect();
+        ready(Ok(items))
+    }
+}
+
+impl UsedAssertionRepository for InMemoryUnitOfWork {
+    fn record(
+        &mut self,
+        assertion: &UsedAssertion,
+    ) -> BoxFuture<'_, Result<RecordOutcome, StoreError>> {
+        let key = (
+            assertion.kind,
+            assertion.issuer.clone(),
+            assertion.jti.clone(),
+        );
+        let outcome = match self.working.used_assertions.entry(key) {
+            Entry::Occupied(_) => RecordOutcome::Replayed,
+            Entry::Vacant(slot) => {
+                slot.insert(assertion.expires_at);
+                RecordOutcome::Recorded
+            }
+        };
+        ready(Ok(outcome))
+    }
+}
+
 impl PurgeRepository for InMemoryUnitOfWork {
     fn purge_expired(
         &mut self,
@@ -551,6 +682,9 @@ impl PurgeRepository for InMemoryUnitOfWork {
             r.created_at <= cutoff && !referenced.contains(&r.id)
         });
 
+        let used_assertions =
+            delete_where(&mut s.used_assertions, |expires_at| *expires_at < cutoff);
+
         ready(Ok(PurgeCounts {
             authorization_requests,
             authorization_codes,
@@ -558,6 +692,7 @@ impl PurgeRepository for InMemoryUnitOfWork {
             refresh_tokens,
             login_sessions,
             grants,
+            used_assertions,
         }))
     }
 

@@ -86,3 +86,35 @@ pub(super) fn grant_record(n: u128, client: &str) -> GrantRecord {
         created_at: t(0),
     }
 }
+
+pub(super) fn jwks_document() -> JwksDocument {
+    JwksDocument::try_new(r#"{"keys":[]}"#.to_owned()).unwrap()
+}
+
+pub(super) fn issuer_id(s: &str) -> IssuerId {
+    IssuerId::try_new(s.to_owned()).unwrap()
+}
+
+pub(super) fn external_subject(s: &str) -> ExternalSubject {
+    ExternalSubject::try_new(s.to_owned()).unwrap()
+}
+
+pub(super) fn issuer_record(id: &str, clients: &[&str]) -> TrustedIssuerRecord {
+    TrustedIssuerRecord {
+        id: issuer_id(id),
+        jwks: jwks_document(),
+        allowed_clients: clients.iter().map(|c| cid(c)).collect(),
+        status: IssuerStatus::Active,
+        created_at: t(0),
+        updated_at: t(1),
+    }
+}
+
+pub(super) fn mapping(issuer: &str, sub: &str, user: u128, at: i64) -> SubjectMapping {
+    SubjectMapping {
+        issuer_id: issuer_id(issuer),
+        subject: external_subject(sub),
+        user_id: UserId::new(uuid::Uuid::from_u128(user)),
+        updated_at: t(at),
+    }
+}

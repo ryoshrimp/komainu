@@ -13,7 +13,8 @@ use crate::uow::PgUnitOfWork;
 macro_rules! columns {
     () => {
         "id, name, client_type, auth_method, secret_hash, redirect_uris, grant_types, \
-         allowed_scopes, default_scopes, skip_consent, status, created_at, updated_at"
+         allowed_scopes, default_scopes, skip_consent, jwks, jwks_uri, status, created_at, \
+         updated_at"
     };
 }
 
@@ -29,6 +30,21 @@ fn from_row(row: &PgRow) -> Result<Client, StoreError> {
         .iter()
         .map(|g| GrantType::from_str(g).map_err(|_| corrupted("clients.grant_types")))
         .collect::<Result<_, _>>()?;
+    let keys = match (
+        col::<Option<String>>(row, "jwks")?,
+        col::<Option<String>>(row, "jwks_uri")?,
+    ) {
+        (None, None) => None,
+        (Some(jwks), None) => Some(ClientKeys::Jwks(valid(
+            JwksDocument::try_new(jwks),
+            "clients.jwks",
+        )?)),
+        (None, Some(uri)) => Some(ClientKeys::JwksUri(valid(
+            JwksUri::try_new(uri),
+            "clients.jwks_uri",
+        )?)),
+        (Some(_), Some(_)) => return Err(corrupted("clients.jwks")),
+    };
     Ok(Client::from_record(ClientRecord {
         id: valid(ClientId::try_new(col(row, "id")?), "clients.id")?,
         name: valid(ClientName::try_new(col(row, "name")?), "clients.name")?,
@@ -42,7 +58,7 @@ fn from_row(row: &PgRow) -> Result<Client, StoreError> {
         allowed_scopes: scope_from_db(col(row, "allowed_scopes")?, "clients.allowed_scopes")?,
         default_scopes: scope_from_db(col(row, "default_scopes")?, "clients.default_scopes")?,
         skip_consent: col(row, "skip_consent")?,
-        keys: None,
+        keys,
         status: ClientStatus::from_str(&col::<String>(row, "status")?)
             .map_err(|_| corrupted("clients.status"))?,
         created_at: col(row, "created_at")?,
@@ -94,8 +110,8 @@ impl ClientRepository for PgUnitOfWork {
             sqlx::query(
                 "INSERT INTO clients (id, name, client_type, auth_method, secret_hash, \
                  redirect_uris, grant_types, allowed_scopes, default_scopes, skip_consent, \
-                 status, created_at, updated_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                 jwks, jwks_uri, status, created_at, updated_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
             )
             .bind(r.id.as_inner())
             .bind(r.name.as_inner())
@@ -107,6 +123,8 @@ impl ClientRepository for PgUnitOfWork {
             .bind(scope_to_db(&r.allowed_scopes))
             .bind(scope_to_db(&r.default_scopes))
             .bind(r.skip_consent)
+            .bind(jwks_to_db(&r))
+            .bind(jwks_uri_to_db(&r))
             .bind(r.status.as_str())
             .bind(r.created_at)
             .bind(r.updated_at)
@@ -123,8 +141,8 @@ impl ClientRepository for PgUnitOfWork {
             let done = sqlx::query(
                 "UPDATE clients SET name = $2, client_type = $3, auth_method = $4, \
                  secret_hash = $5, redirect_uris = $6, grant_types = $7, allowed_scopes = $8, \
-                 default_scopes = $9, skip_consent = $10, status = $11, created_at = $12, \
-                 updated_at = $13 WHERE id = $1",
+                 default_scopes = $9, skip_consent = $10, jwks = $11, jwks_uri = $12, \
+                 status = $13, created_at = $14, updated_at = $15 WHERE id = $1",
             )
             .bind(r.id.as_inner())
             .bind(r.name.as_inner())
@@ -136,6 +154,8 @@ impl ClientRepository for PgUnitOfWork {
             .bind(scope_to_db(&r.allowed_scopes))
             .bind(scope_to_db(&r.default_scopes))
             .bind(r.skip_consent)
+            .bind(jwks_to_db(&r))
+            .bind(jwks_uri_to_db(&r))
             .bind(r.status.as_str())
             .bind(r.created_at)
             .bind(r.updated_at)
@@ -185,4 +205,18 @@ fn grant_types_to_db(r: &ClientRecord) -> Vec<String> {
         .iter()
         .map(|g| g.as_str().to_owned())
         .collect()
+}
+
+fn jwks_to_db(r: &ClientRecord) -> Option<&str> {
+    match &r.keys {
+        Some(ClientKeys::Jwks(jwks)) => Some(jwks.as_str()),
+        _ => None,
+    }
+}
+
+fn jwks_uri_to_db(r: &ClientRecord) -> Option<&str> {
+    match &r.keys {
+        Some(ClientKeys::JwksUri(uri)) => Some(uri.as_str()),
+        _ => None,
+    }
 }
