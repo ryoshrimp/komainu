@@ -32,6 +32,7 @@ fn split(r: &GrantRecord) -> Split<'_> {
             ("authorization_code", Some(hash_to_db(code_hash)))
         }
         GrantOrigin::ClientCredentials => ("client_credentials", None),
+        GrantOrigin::JwtBearer => ("jwt_bearer", None),
     };
     let (status, revoked_at, reason) = match r.status {
         GrantStatus::Active => ("active", None, None),
@@ -57,6 +58,7 @@ fn from_row(row: &PgRow) -> Result<Grant, StoreError> {
             code_hash: hash_from_db(hash, "grants.origin_code_hash")?,
         },
         ("client_credentials", None) => GrantOrigin::ClientCredentials,
+        ("jwt_bearer", None) => GrantOrigin::JwtBearer,
         _ => return Err(corrupted("grants.origin")),
     };
     let status = match (

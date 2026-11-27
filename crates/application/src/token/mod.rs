@@ -86,6 +86,9 @@ impl TokenService {
                 self.refresh_token(ctx, uow.as_mut(), &client, &request)
                     .await?
             }
+            // Placeholder: the wire value is not parsed above. T7 replaces this with the
+            // jwt-bearer grant.
+            GrantType::JwtBearer => return Err(TokenError::UnsupportedGrantType),
         };
         let (response, grant_id, audit) = match step {
             Step::Issued {

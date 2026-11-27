@@ -164,6 +164,7 @@ impl AdminService {
                 allowed_scopes: input.allowed_scopes,
                 default_scopes: input.default_scopes,
                 skip_consent: input.skip_consent,
+                keys: None,
             },
             secret.as_ref().map(OpaqueToken::hash),
             deps.clock.now(),

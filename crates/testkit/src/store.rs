@@ -605,6 +605,7 @@ mod tests {
                 allowed_scopes: ScopeSet::empty(),
                 default_scopes: ScopeSet::empty(),
                 skip_consent: false,
+                keys: None,
             },
             None,
             t0(),

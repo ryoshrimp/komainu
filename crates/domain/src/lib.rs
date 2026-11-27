@@ -7,6 +7,7 @@ pub mod authorization;
 pub mod client;
 pub mod error;
 pub mod identity;
+pub mod issuer;
 pub mod shared;
 pub mod token;
 
@@ -16,5 +17,6 @@ pub use ddd_toolkit::AggregateRoot;
 pub use ddd_toolkit::secret::Secret;
 pub use error::DomainError;
 pub use identity::*;
+pub use issuer::*;
 pub use shared::*;
 pub use token::*;

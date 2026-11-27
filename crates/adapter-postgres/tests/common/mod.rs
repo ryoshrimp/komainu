@@ -81,6 +81,7 @@ pub fn client_record(id: &str) -> ClientRecord {
         allowed_scopes: scope("read write"),
         default_scopes: scope("read"),
         skip_consent: true,
+        keys: None,
         status: ClientStatus::Active,
         created_at: t(0),
         updated_at: t(1),

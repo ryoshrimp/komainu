@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 
 use super::event::ClientEvent;
 use crate::error::DomainError;
-use crate::{ClientId, ClientName, OpaqueToken, RedirectUri, ScopeSet, TokenHash};
+use crate::{ClientId, ClientKeys, ClientName, OpaqueToken, RedirectUri, ScopeSet, TokenHash};
 
 /// Whether the client can keep a secret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -41,6 +41,8 @@ pub enum TokenEndpointAuthMethod {
     ClientSecretBasic,
     ClientSecretPost,
     None,
+    /// RFC 7523 §2.2.
+    PrivateKeyJwt,
 }
 
 impl TokenEndpointAuthMethod {
@@ -49,6 +51,7 @@ impl TokenEndpointAuthMethod {
             Self::ClientSecretBasic => "client_secret_basic",
             Self::ClientSecretPost => "client_secret_post",
             Self::None => "none",
+            Self::PrivateKeyJwt => "private_key_jwt",
         }
     }
 }
@@ -60,6 +63,7 @@ impl FromStr for TokenEndpointAuthMethod {
             "client_secret_basic" => Ok(Self::ClientSecretBasic),
             "client_secret_post" => Ok(Self::ClientSecretPost),
             "none" => Ok(Self::None),
+            "private_key_jwt" => Ok(Self::PrivateKeyJwt),
             _ => Err(DomainError::invalid(
                 "token_endpoint_auth_method",
                 "unknown value",
@@ -74,6 +78,8 @@ pub enum GrantType {
     AuthorizationCode,
     ClientCredentials,
     RefreshToken,
+    /// RFC 7523 §2.1.
+    JwtBearer,
 }
 
 impl GrantType {
@@ -82,6 +88,7 @@ impl GrantType {
             Self::AuthorizationCode => "authorization_code",
             Self::ClientCredentials => "client_credentials",
             Self::RefreshToken => "refresh_token",
+            Self::JwtBearer => "urn:ietf:params:oauth:grant-type:jwt-bearer",
         }
     }
 }
@@ -93,6 +100,7 @@ impl FromStr for GrantType {
             "authorization_code" => Ok(Self::AuthorizationCode),
             "client_credentials" => Ok(Self::ClientCredentials),
             "refresh_token" => Ok(Self::RefreshToken),
+            "urn:ietf:params:oauth:grant-type:jwt-bearer" => Ok(Self::JwtBearer),
             _ => Err(DomainError::invalid("grant_type", "unknown value")),
         }
     }
@@ -137,6 +145,7 @@ pub struct NewClient {
     pub allowed_scopes: ScopeSet,
     pub default_scopes: ScopeSet,
     pub skip_consent: bool,
+    pub keys: Option<ClientKeys>,
 }
 
 /// Input of [`Client::update`]. `None` means "leave unchanged".
@@ -149,6 +158,8 @@ pub struct ClientUpdate {
     pub default_scopes: Option<ScopeSet>,
     pub skip_consent: Option<bool>,
     pub auth_method: Option<TokenEndpointAuthMethod>,
+    /// `Some` replaces the keys.
+    pub keys: Option<ClientKeys>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +188,7 @@ pub struct Client {
     allowed_scopes: ScopeSet,
     default_scopes: ScopeSet,
     skip_consent: bool,
+    keys: Option<ClientKeys>,
     status: ClientStatus,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
@@ -197,6 +209,7 @@ pub struct ClientRecord {
     pub allowed_scopes: ScopeSet,
     pub default_scopes: ScopeSet,
     pub skip_consent: bool,
+    pub keys: Option<ClientKeys>,
     pub status: ClientStatus,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
@@ -219,6 +232,7 @@ impl Client {
             allowed_scopes: new.allowed_scopes,
             default_scopes: new.default_scopes,
             skip_consent: new.skip_consent,
+            keys: new.keys,
             status: ClientStatus::Active,
             created_at: now,
             updated_at: now,
@@ -234,6 +248,25 @@ impl Client {
     }
 
     pub fn update(&mut self, update: ClientUpdate, now: OffsetDateTime) -> Result<(), DomainError> {
+        if let Some(method) = update.auth_method {
+            use TokenEndpointAuthMethod::{ClientSecretBasic, ClientSecretPost};
+            let secret_pair = matches!(method, ClientSecretBasic | ClientSecretPost)
+                && matches!(self.auth_method, ClientSecretBasic | ClientSecretPost);
+            let involves_jwt = method == TokenEndpointAuthMethod::PrivateKeyJwt
+                || self.auth_method == TokenEndpointAuthMethod::PrivateKeyJwt;
+            if method != self.auth_method && involves_jwt && !secret_pair {
+                return Err(DomainError::invalid(
+                    "auth_method",
+                    "cannot switch between secret and private_key_jwt",
+                ));
+            }
+        }
+        if update.keys.is_some() && self.auth_method != TokenEndpointAuthMethod::PrivateKeyJwt {
+            return Err(DomainError::invalid(
+                "keys",
+                "only private_key_jwt clients have keys",
+            ));
+        }
         let mut next = Client {
             id: self.id.clone(),
             name: update.name.unwrap_or_else(|| self.name.clone()),
@@ -253,6 +286,7 @@ impl Client {
                 .default_scopes
                 .unwrap_or_else(|| self.default_scopes.clone()),
             skip_consent: update.skip_consent.unwrap_or(self.skip_consent),
+            keys: update.keys.or_else(|| self.keys.clone()),
             status: self.status,
             created_at: self.created_at,
             updated_at: now,
@@ -275,8 +309,10 @@ impl Client {
         new_hash: TokenHash,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
-        if self.client_type == ClientType::Public {
-            return Err(DomainError::InvalidState("public clients have no secret"));
+        if self.client_type == ClientType::Public
+            || self.auth_method == TokenEndpointAuthMethod::PrivateKeyJwt
+        {
+            return Err(DomainError::InvalidState("client has no secret"));
         }
         self.secret_hash = Some(new_hash);
         self.updated_at = now;
@@ -324,6 +360,10 @@ impl Client {
 
     pub fn auth_method(&self) -> TokenEndpointAuthMethod {
         self.auth_method
+    }
+
+    pub fn keys(&self) -> Option<&ClientKeys> {
+        self.keys.as_ref()
     }
 
     pub fn is_active(&self) -> bool {
@@ -412,6 +452,7 @@ impl Client {
             allowed_scopes: self.allowed_scopes.clone(),
             default_scopes: self.default_scopes.clone(),
             skip_consent: self.skip_consent,
+            keys: self.keys.clone(),
             status: self.status,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -431,6 +472,7 @@ impl Client {
             allowed_scopes: record.allowed_scopes,
             default_scopes: record.default_scopes,
             skip_consent: record.skip_consent,
+            keys: record.keys,
             status: record.status,
             created_at: record.created_at,
             updated_at: record.updated_at,
@@ -444,23 +486,43 @@ impl Client {
             return Err(violation("grant_types must not be empty"));
         }
         match self.client_type {
-            ClientType::Confidential => {
-                if self.secret_hash.is_none() {
-                    return Err(violation("confidential client requires a secret"));
+            ClientType::Confidential => match self.auth_method {
+                TokenEndpointAuthMethod::ClientSecretBasic
+                | TokenEndpointAuthMethod::ClientSecretPost => {
+                    if self.secret_hash.is_none() {
+                        return Err(violation("confidential client requires a secret"));
+                    }
+                    if self.keys.is_some() {
+                        return Err(violation("secret authentication must not have keys"));
+                    }
                 }
-                if self.auth_method == TokenEndpointAuthMethod::None {
+                TokenEndpointAuthMethod::PrivateKeyJwt => {
+                    if self.secret_hash.is_some() {
+                        return Err(violation("private_key_jwt client must not have a secret"));
+                    }
+                    if self.keys.is_none() {
+                        return Err(violation("private_key_jwt client requires keys"));
+                    }
+                }
+                TokenEndpointAuthMethod::None => {
                     return Err(violation("confidential client must authenticate"));
                 }
-            }
+            },
             ClientType::Public => {
                 if self.secret_hash.is_some() {
                     return Err(violation("public client must not have a secret"));
+                }
+                if self.keys.is_some() {
+                    return Err(violation("public client must not have keys"));
                 }
                 if self.auth_method != TokenEndpointAuthMethod::None {
                     return Err(violation("public client must use auth method none"));
                 }
                 if self.supports_grant(GrantType::ClientCredentials) {
                     return Err(violation("public client cannot use client_credentials"));
+                }
+                if self.supports_grant(GrantType::JwtBearer) {
+                    return Err(violation("public client cannot use jwt-bearer"));
                 }
             }
         }
@@ -545,6 +607,7 @@ mod tests {
             allowed_scopes: scopes("read write"),
             default_scopes: scopes("read"),
             skip_consent: false,
+            keys: None,
         }
     }
 
@@ -774,6 +837,7 @@ mod tests {
             GrantType::AuthorizationCode,
             GrantType::ClientCredentials,
             GrantType::RefreshToken,
+            GrantType::JwtBearer,
         ] {
             assert_eq!(g.as_str().parse::<GrantType>(), Ok(g));
         }
@@ -781,6 +845,7 @@ mod tests {
             TokenEndpointAuthMethod::ClientSecretBasic,
             TokenEndpointAuthMethod::ClientSecretPost,
             TokenEndpointAuthMethod::None,
+            TokenEndpointAuthMethod::PrivateKeyJwt,
         ] {
             assert_eq!(m.as_str().parse::<TokenEndpointAuthMethod>(), Ok(m));
         }
@@ -794,6 +859,125 @@ mod tests {
                 reason: "unknown value"
             })
         );
+    }
+
+    fn jwks() -> ClientKeys {
+        ClientKeys::Jwks(crate::JwksDocument::try_new("{\"keys\":[]}".to_owned()).unwrap())
+    }
+
+    fn jwt_client_input() -> NewClient {
+        let mut new = new_client(ClientType::Confidential);
+        new.auth_method = TokenEndpointAuthMethod::PrivateKeyJwt;
+        new.grant_types = [GrantType::JwtBearer].into();
+        new.redirect_uris = Vec::new();
+        new.keys = Some(jwks());
+        new
+    }
+
+    #[test]
+    fn private_key_jwt_requires_keys_and_no_secret() {
+        let client = Client::register(jwt_client_input(), None, now()).unwrap();
+        assert_eq!(client.keys(), Some(&jwks()));
+        let hash = Some(secret("x").hash());
+        assert!(Client::register(jwt_client_input(), hash, now()).is_err());
+        let mut new = jwt_client_input();
+        new.keys = None;
+        assert!(Client::register(new, None, now()).is_err());
+
+        let mut new = new_client(ClientType::Confidential);
+        new.keys = Some(jwks());
+        assert!(Client::register(new, hash, now()).is_err());
+        let mut new = new_client(ClientType::Public);
+        new.keys = Some(jwks());
+        assert!(Client::register(new, None, now()).is_err());
+    }
+
+    #[test]
+    fn jwt_bearer_grant_rules() {
+        let mut new = new_client(ClientType::Public);
+        new.grant_types.insert(GrantType::JwtBearer);
+        assert!(Client::register(new, None, now()).is_err());
+
+        let mut new = new_client(ClientType::Confidential);
+        new.grant_types = [GrantType::JwtBearer].into();
+        new.redirect_uris = Vec::new();
+        assert!(Client::register(new, Some(secret("x").hash()), now()).is_ok());
+    }
+
+    #[test]
+    fn update_auth_method_switching() {
+        let mut basic = confidential();
+        let to_jwt = ClientUpdate {
+            auth_method: Some(TokenEndpointAuthMethod::PrivateKeyJwt),
+            ..Default::default()
+        };
+        assert_eq!(
+            basic.update(to_jwt, now()),
+            Err(DomainError::InvalidValue {
+                field: "auth_method",
+                reason: "cannot switch between secret and private_key_jwt"
+            })
+        );
+        let to_post = ClientUpdate {
+            auth_method: Some(TokenEndpointAuthMethod::ClientSecretPost),
+            ..Default::default()
+        };
+        basic.update(to_post, now()).unwrap();
+        assert_eq!(
+            basic.auth_method(),
+            TokenEndpointAuthMethod::ClientSecretPost
+        );
+
+        let mut jwt = Client::register(jwt_client_input(), None, now()).unwrap();
+        let to_basic = ClientUpdate {
+            auth_method: Some(TokenEndpointAuthMethod::ClientSecretBasic),
+            ..Default::default()
+        };
+        assert!(jwt.update(to_basic, now()).is_err());
+    }
+
+    #[test]
+    fn update_none_to_secret_is_an_invariant_error_not_a_jwt_switch_error() {
+        let mut public = Client::register(new_client(ClientType::Public), None, now()).unwrap();
+        let update = ClientUpdate {
+            auth_method: Some(TokenEndpointAuthMethod::ClientSecretBasic),
+            ..Default::default()
+        };
+        let err = public.update(update, now()).unwrap_err();
+        assert!(matches!(err, DomainError::ClientInvariant(_)), "{err:?}");
+    }
+
+    #[test]
+    fn update_keys_only_for_private_key_jwt() {
+        let mut basic = confidential();
+        let set_keys = ClientUpdate {
+            keys: Some(jwks()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            basic.update(set_keys, now()),
+            Err(DomainError::InvalidValue { field: "keys", .. })
+        ));
+
+        let mut jwt = Client::register(jwt_client_input(), None, now()).unwrap();
+        let uri = ClientKeys::JwksUri(
+            crate::JwksUri::try_new("https://c.example/jwks".to_owned()).unwrap(),
+        );
+        let update = ClientUpdate {
+            keys: Some(uri.clone()),
+            ..Default::default()
+        };
+        jwt.update(update, now()).unwrap();
+        assert_eq!(jwt.keys(), Some(&uri));
+    }
+
+    #[test]
+    fn rotate_secret_rejected_for_private_key_jwt() {
+        let mut jwt = Client::register(jwt_client_input(), None, now()).unwrap();
+        assert!(matches!(
+            jwt.rotate_secret(secret("x").hash(), now()),
+            Err(DomainError::InvalidState("client has no secret"))
+        ));
     }
 
     #[test]

@@ -11,6 +11,7 @@ use crate::{AuthorizationCode, ClientId, GrantId, ScopeSet, Subject, TokenHash};
 pub enum GrantOrigin {
     AuthorizationCode { code_hash: TokenHash },
     ClientCredentials,
+    JwtBearer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -119,6 +120,23 @@ impl Grant {
         )
     }
 
+    pub fn for_jwt_bearer(
+        id: GrantId,
+        client_id: ClientId,
+        subject: Subject,
+        scope: ScopeSet,
+        now: OffsetDateTime,
+    ) -> Grant {
+        Self::create(
+            id,
+            client_id,
+            Some(subject),
+            scope,
+            GrantOrigin::JwtBearer,
+            now,
+        )
+    }
+
     fn create(
         id: GrantId,
         client_id: ClientId,
@@ -145,6 +163,7 @@ impl Grant {
             origin: match origin {
                 GrantOrigin::AuthorizationCode { .. } => "authorization_code",
                 GrantOrigin::ClientCredentials => "client_credentials",
+                GrantOrigin::JwtBearer => "jwt_bearer",
             },
         });
         grant
@@ -236,6 +255,27 @@ mod tests {
             [GrantEvent::Created {
                 origin: "client_credentials",
                 subject: None,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn jwt_bearer_grant_has_subject_and_origin() {
+        let mut grant = Grant::for_jwt_bearer(
+            gid(3),
+            cid(),
+            Subject::try_new("u1".to_owned()).unwrap(),
+            scopes("read"),
+            t0(),
+        );
+        assert!(grant.subject().is_some());
+        assert_eq!(grant.to_record().origin, GrantOrigin::JwtBearer);
+        assert!(matches!(
+            grant.pull_events().as_slice(),
+            [GrantEvent::Created {
+                origin: "jwt_bearer",
+                subject: Some(_),
                 ..
             }]
         ));
