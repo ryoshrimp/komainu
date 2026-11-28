@@ -17,6 +17,7 @@ async fn cleanup_run_once_deletes_only_tokens_past_the_grace_period() {
         PgUnitOfWorkFactory::new(db.pool.clone()),
         settings.application,
         settings.http,
+        settings.key_sealer,
     )
     .expect("services");
 

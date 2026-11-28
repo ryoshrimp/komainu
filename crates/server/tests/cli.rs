@@ -48,6 +48,7 @@ impl Env {
             PgUnitOfWorkFactory::new(self.db.pool.clone()),
             settings.application,
             settings.http,
+            settings.key_sealer,
         )
         .unwrap()
     }

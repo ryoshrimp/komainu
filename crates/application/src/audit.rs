@@ -87,6 +87,16 @@ pub enum AuditKind {
     SubjectMapped,
     SubjectUnmapped,
     AssertionRejected,
+    /// A signing key was created.
+    SigningKeyCreated,
+    /// A pending signing key became active early.
+    SigningKeyActivated,
+    /// A signing key was retired.
+    SigningKeyRetired,
+    /// An expired signing key was deleted.
+    SigningKeyDeleted,
+    /// A signing key was revoked (deleted on request).
+    SigningKeyRevoked,
 }
 
 impl AuditKind {
@@ -121,6 +131,11 @@ impl AuditKind {
             Self::SubjectMapped => "issuer.subject_mapped",
             Self::SubjectUnmapped => "issuer.subject_unmapped",
             Self::AssertionRejected => "assertion.rejected",
+            Self::SigningKeyCreated => "signing_key.created",
+            Self::SigningKeyActivated => "signing_key.activated",
+            Self::SigningKeyRetired => "signing_key.retired",
+            Self::SigningKeyDeleted => "signing_key.deleted",
+            Self::SigningKeyRevoked => "signing_key.revoked",
         }
     }
 }

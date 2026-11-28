@@ -4,8 +4,9 @@
 
 use komainu_domain::{
     AccessToken, AuthorizationCode, AuthorizationRequest, AuthorizationRequestId, Client, ClientId,
-    Consent, ExternalSubject, Grant, GrantId, IssuerId, LoginSession, RefreshToken, Subject,
-    SubjectMapping, TokenHash, TrustedIssuer, User, UserId, Username,
+    Consent, ExternalSubject, Grant, GrantId, IssuerId, LoginSession, RefreshToken,
+    ServerSigningKey, SigningKeyId, Subject, SubjectMapping, TokenHash, TrustedIssuer, User,
+    UserId, Username,
 };
 use time::OffsetDateTime;
 
@@ -215,4 +216,19 @@ pub trait UsedAssertionRepository: Send {
         &mut self,
         assertion: &UsedAssertion,
     ) -> BoxFuture<'_, Result<RecordOutcome, StoreError>>;
+}
+
+pub trait SigningKeyRepository: Send {
+    /// Takes the exclusive rotation lock, held until the unit of work ends (commit or
+    /// drop). Waits until it is available; there is no timeout (the database's
+    /// `statement_timeout` applies).
+    fn lock_rotation(&mut self) -> BoxFuture<'_, Result<(), StoreError>>;
+    /// All keys in ascending `activates_at` order, then ascending `kid`.
+    fn list(&mut self) -> BoxFuture<'_, Result<Vec<ServerSigningKey>, StoreError>>;
+    /// A duplicate `kid` is `Conflict`.
+    fn insert(&mut self, key: &ServerSigningKey) -> BoxFuture<'_, Result<(), StoreError>>;
+    /// Updates only `activates_at`, `retires_at` and `deletes_at`. A missing row is `Other`.
+    fn update_schedule(&mut self, key: &ServerSigningKey) -> BoxFuture<'_, Result<(), StoreError>>;
+    /// `true` when a row was deleted, `false` when there was none.
+    fn delete(&mut self, kid: &SigningKeyId) -> BoxFuture<'_, Result<bool, StoreError>>;
 }

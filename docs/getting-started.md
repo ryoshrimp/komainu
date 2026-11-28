@@ -113,6 +113,63 @@ curl -u "$WEB_ID:$WEB_SECRET" -d grant_type=refresh_token -d refresh_token=REFRE
   http://localhost:8080/token
 ```
 
+## 7. Enable signing keys (optional)
+
+Signing is off until you set a key encryption key. komainu then creates the authorization server's
+signing keys, stores their private parts encrypted with that key, and publishes the public parts at
+`GET /jwks`. The authorization server metadata gets a `jwks_uri` too.
+
+Generate a key encryption key (32 random bytes in standard base64). The command needs no
+configuration file or database:
+
+```sh
+export KOMAINU_SIGNING__ENCRYPTION_KEY=$(komainu key generate-encryption-key)
+```
+
+Prefer the environment variable to writing the key into `komainu.toml`, and keep it in a secret
+store. If you lose the key encryption key, the stored keys can no longer be decrypted. While an
+undecryptable `pending` or `active` key remains, signing and `/jwks` fail. To recover:
+
+1. Stop every server instance.
+2. Set a new key encryption key.
+3. Run `komainu key list` to see the existing keys.
+4. Revoke the `pending`, `retired` and `expired` keys first, then the `active` keys. Revoking an
+   active key makes a replacement active at once (for an algorithm in `signing.algorithms`),
+   encrypted with the new key.
+5. Start the server with the new key encryption key.
+
+Tokens issued with the old keys can no longer be verified.
+
+The other items are under `[signing]` and have defaults:
+
+```toml
+[signing]
+algorithms = ["ES256"]        # "ES256", "RS256"; one active key is kept per algorithm
+active_days = 90              # how long a key signs
+prepublish_days = 7           # a successor is published this many days before it takes over
+retire_overlap_days = 7       # a retired key stays in /jwks this long
+rotation_interval_secs = 3600 # how often the server checks for keys to create or delete
+```
+
+Constraints: `prepublish_days` is at least 1 and less than `active_days`;
+`retire_overlap_days` x 86400 must be at least `oauth.access_token_ttl_secs`;
+`rotation_interval_secs` is at least 60 and less than `prepublish_days` x 86400.
+
+`komainu serve` rotates keys on start and then every `rotation_interval_secs`. Check the result and
+manage keys by hand with `komainu key`:
+
+```sh
+komainu key list                  # one line per key: kid, algorithm, status, activates/retires/deletes times
+komainu key rotate --alg ES256    # the current keys retire now and a new one is active at once
+komainu key revoke KID            # delete a key; a replacement is made active if none would be left
+curl http://localhost:8080/jwks
+```
+
+`list`, `rotate` and `revoke` take `--format json`. The status is `pending`, `active`, `retired` or
+`expired`. `komainu key list|rotate|revoke` exit with code 2 when signing is off, when `rotate --alg`
+names an algorithm that is not in `signing.algorithms`, and when the `KID` is malformed. An unknown
+`KID` exits with code 3.
+
 ## Operations notes
 
 - `GET /.well-known/oauth-authorization-server` serves the authorization server metadata
@@ -132,6 +189,16 @@ curl -u "$WEB_ID:$WEB_SECRET" -d grant_type=refresh_token -d refresh_token=REFRE
       proxy_pass http://127.0.0.1:8080/;
   }
   ```
+- `oauth.disabled_grant_types` and `oauth.disabled_auth_methods` (arrays, empty by default) turn off
+  grants and client authentication methods. Grants: `client_credentials`, `refresh_token`,
+  `urn:ietf:params:oauth:grant-type:jwt-bearer` (`authorization_code` cannot be disabled). Methods:
+  `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `none`. For example,
+  `disabled_grant_types = ["client_credentials"]` removes that grant from the metadata and from
+  `/token`. `komainu client create` and update refuse (exit code 2) a client that uses a disabled
+  grant or method. If no authentication method is left (for example, `client_secret_basic`,
+  `client_secret_post` and `private_key_jwt` are all disabled and public clients are not allowed),
+  every command except `komainu key generate-encryption-key` then fails with a configuration error
+  (exit code 2).
 - `GET /metrics` on the ops listener serves Prometheus metrics.
 - Audit events (code issued, token issued, replay detected, logins, client authentication failures,
   admin operations) are rows of the `audit_events` table. They never contain secrets.

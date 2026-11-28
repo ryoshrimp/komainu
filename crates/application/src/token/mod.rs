@@ -1,6 +1,8 @@
 //! The token endpoint use cases and access token verification.
 
+mod auth;
 mod error;
+mod grant;
 mod request;
 
 use komainu_domain::{
@@ -18,7 +20,7 @@ pub use request::{
 
 use crate::assertion::jwks::{Freshness, KeyResolveError};
 use crate::assertion::verify::{AssertionError, Expected, verify_assertion};
-use crate::assertion::{ASSERTION_LEEWAY, ASSERTION_MAX_LEN, GRANT_TYPE_JWT_BEARER};
+use crate::assertion::{ASSERTION_LEEWAY, ASSERTION_MAX_LEN};
 use crate::audit::{AuditActor, AuditEvent, AuditKind, AuditOutcome};
 use crate::context::RequestContext;
 use crate::deps::Dependencies;
@@ -29,15 +31,22 @@ use crate::support::{
     truncate_chars,
 };
 use komainu_domain::{ClientType, TokenHash};
+use std::sync::Arc;
+
+pub(crate) use auth::AuthMethodRegistry;
+use auth::presented_method;
+pub(crate) use grant::GrantRegistry;
 
 #[derive(Clone)]
 pub struct TokenService {
     deps: Dependencies,
+    grants: Arc<GrantRegistry>,
+    auth_methods: Arc<AuthMethodRegistry>,
 }
 
 /// The endpoint that a client authenticates at. A client assertion may name it as `aud`.
 #[derive(Clone, Copy)]
-enum Endpoint {
+pub(crate) enum Endpoint {
     Token,
     Revocation,
 }
@@ -97,7 +106,13 @@ fn parse_token(raw: &str) -> Option<OpaqueToken> {
 
 impl TokenService {
     pub fn new(deps: Dependencies) -> Self {
-        Self { deps }
+        let grants = Arc::new(GrantRegistry::builtin(&deps.config));
+        let auth_methods = Arc::new(AuthMethodRegistry::builtin(&deps.config));
+        Self {
+            deps,
+            grants,
+            auth_methods,
+        }
     }
 
     /// What this server supports. Equivalent to `ServerCapabilities::from_config` of the
@@ -116,43 +131,22 @@ impl TokenService {
         if !request.duplicated.is_empty() {
             return Err(TokenError::InvalidRequest);
         }
-        let grant_type = match request.grant_type.as_deref() {
-            None => return Err(TokenError::InvalidRequest),
-            Some("authorization_code") => GrantType::AuthorizationCode,
-            Some("client_credentials") => GrantType::ClientCredentials,
-            Some("refresh_token") => GrantType::RefreshToken,
-            Some(GRANT_TYPE_JWT_BEARER) => {
-                if self.deps.config.issuer.is_none() {
-                    return Err(TokenError::UnsupportedGrantType);
-                }
-                GrantType::JwtBearer
-            }
-            Some(_) => return Err(TokenError::UnsupportedGrantType),
+        let Some(grant_type) = request.grant_type.as_deref() else {
+            return Err(TokenError::InvalidRequest);
         };
+        let Some(handler) = self.grants.find(grant_type, &self.deps.config) else {
+            return Err(TokenError::UnsupportedGrantType);
+        };
+        let grant_type = handler.grant_type();
         let (mut uow, client) = self
             .authenticate_client(ctx, &auth, Endpoint::Token)
             .await?;
         if !client.supports_grant(grant_type) {
             return Err(TokenError::UnauthorizedClient);
         }
-        let step = match grant_type {
-            GrantType::AuthorizationCode => {
-                self.authorization_code(ctx, uow.as_mut(), &client, &request)
-                    .await?
-            }
-            GrantType::ClientCredentials => {
-                self.client_credentials(ctx, uow.as_mut(), &client, &request)
-                    .await?
-            }
-            GrantType::RefreshToken => {
-                self.refresh_token(ctx, uow.as_mut(), &client, &request)
-                    .await?
-            }
-            GrantType::JwtBearer => {
-                self.jwt_bearer(ctx, uow.as_mut(), &client, &request)
-                    .await?
-            }
-        };
+        let step = handler
+            .handle(self, ctx, uow.as_mut(), &client, &request)
+            .await?;
         let (response, grant_id, audit) = match step {
             Step::Issued {
                 response,
@@ -309,15 +303,41 @@ impl TokenService {
         auth: &ClientAuthentication,
         endpoint: Endpoint,
     ) -> Result<(Box<dyn UnitOfWork>, Client), TokenError> {
+        let Some(method) = presented_method(auth) else {
+            self.fail_authentication(ctx, "missing", None, None).await?;
+            return Err(TokenError::InvalidClient {
+                basic_attempted: false,
+            });
+        };
+        let Some(handler) = self.auth_methods.find(method) else {
+            let presented = match auth {
+                ClientAuthentication::Basic { client_id, .. }
+                | ClientAuthentication::Post { client_id, .. }
+                | ClientAuthentication::PublicId { client_id } => Some(client_id.as_str()),
+                ClientAuthentication::Assertion { client_id, .. } => client_id.as_deref(),
+                ClientAuthentication::None => None,
+            };
+            self.fail_authentication(ctx, method.as_str(), presented, Some("method_disabled"))
+                .await?;
+            return Err(TokenError::InvalidClient {
+                basic_attempted: method == TokenEndpointAuthMethod::ClientSecretBasic,
+            });
+        };
+        handler.authenticate(self, ctx, auth, endpoint).await
+    }
+
+    /// The secret and public-client checks of `client_secret_basic`, `client_secret_post`
+    /// and `none`. Not called for an assertion or for no credentials (`authenticate_client`
+    /// handles those first).
+    async fn authenticate_presented(
+        &self,
+        ctx: &RequestContext,
+        auth: &ClientAuthentication,
+    ) -> Result<(Box<dyn UnitOfWork>, Client), TokenError> {
         let deps = &self.deps;
         let (method, presented, secret, basic) = match auth {
-            ClientAuthentication::Assertion {
-                client_id,
-                assertion,
-            } => {
-                return self
-                    .authenticate_assertion(ctx, client_id.as_deref(), assertion, endpoint)
-                    .await;
+            ClientAuthentication::Assertion { .. } | ClientAuthentication::None => {
+                unreachable!("not a secret or public client authentication")
             }
             ClientAuthentication::Basic { client_id, secret } => {
                 ("client_secret_basic", Some(client_id), Some(secret), true)
@@ -326,7 +346,6 @@ impl TokenService {
                 ("client_secret_post", Some(client_id), Some(secret), false)
             }
             ClientAuthentication::PublicId { client_id } => ("none", Some(client_id), None, false),
-            ClientAuthentication::None => ("missing", None, None, false),
         };
         let mut uow = deps.store.begin().await?;
         let client = match presented {
@@ -915,7 +934,10 @@ impl TokenService {
         .map_err(domain_failure)?;
         uow.access_tokens().insert(&record).await?;
         let mut refresh_token = None;
-        if refresh && client.supports_grant(GrantType::RefreshToken) {
+        if refresh
+            && client.supports_grant(GrantType::RefreshToken)
+            && self.grants.is_registered(GrantType::RefreshToken)
+        {
             let token = new_opaque_token(deps.random.as_ref());
             let record =
                 RefreshToken::issue(token.hash(), grant, now, deps.config.refresh_token_ttl)
@@ -954,7 +976,7 @@ struct ExternalIdentity {
 }
 
 /// Result of a per-grant step.
-enum Step {
+pub(crate) enum Step {
     Issued {
         response: TokenResponse,
         grant_id: GrantId,

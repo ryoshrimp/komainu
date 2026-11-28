@@ -2,6 +2,7 @@
 
 mod client;
 mod issuer;
+pub(crate) mod key;
 mod output;
 mod user;
 
@@ -42,6 +43,9 @@ pub enum Command {
     /// Manage trusted external assertion issuers.
     #[command(subcommand)]
     Issuer(issuer::IssuerCommand),
+    /// Manage the authorization server's signing keys.
+    #[command(subcommand)]
+    Key(key::KeyCommand),
 }
 
 /// An administration command, i.e. everything except `serve` and `migrate`.
@@ -67,6 +71,8 @@ fn admin_exit(error: AdminError) -> Exit {
         AdminError::Invalid(error) => Exit::usage(error),
         error @ (AdminError::UnknownScope(_)
         | AdminError::PublicClientsDisabled
+        | AdminError::AuthMethodDisabled(_)
+        | AdminError::GrantTypeDisabled(_)
         | AdminError::InvalidJwks(_)
         | AdminError::UnknownClient(_)) => Exit::usage(error),
         AdminError::NotFound => Exit::new(3, "not found"),

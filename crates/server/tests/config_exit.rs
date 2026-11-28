@@ -69,3 +69,43 @@ fn config_invalid_log_filter_exits_2_for_every_command() {
             .stderr(predicates::str::contains("log.filter"));
     }
 }
+
+#[test]
+fn generate_encryption_key_needs_no_configuration() {
+    let missing = std::env::temp_dir().join("komainu-no-such-dir/komainu.toml");
+    let output = common::run(&missing, &["key", "generate-encryption-key"], None);
+    assert_eq!(output.status.code(), Some(0));
+    let key = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(key.trim().len(), 44, "{key}");
+    let secret = komainu::domain::Secret::new(key.trim().to_owned());
+    komainu::AesGcmKeySealer::from_base64(
+        &secret,
+        std::sync::Arc::new(komainu::adapter_std::OsSecureRandom),
+    )
+    .expect("the printed key is readable");
+}
+
+#[test]
+fn key_commands_without_signing_exit_2_before_the_database() {
+    let path = write("key-disabled", BASE);
+    for args in [
+        &["key", "list"][..],
+        &["key", "rotate", "--alg", "ES256"],
+        &["key", "revoke", "kid"],
+    ] {
+        let output = common::run(&path, args, None);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(stderr.contains("signing is disabled"), "{stderr}");
+    }
+}
+
+#[test]
+fn invalid_encryption_key_exits_2_without_echoing_it() {
+    let secret = "hunter2-not-base64";
+    let body = format!("{BASE}\n[signing]\nencryption_key = \"{secret}\"\n");
+    let path = write("key-bad", &body);
+    let (code, stderr) = exit_code(&path);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(!stderr.contains(secret), "{stderr}");
+}

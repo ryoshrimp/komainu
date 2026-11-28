@@ -4,10 +4,13 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::Arc;
 
 use figment::Figment;
 use figment::providers::{Env, Format, Toml};
-use komainu::domain::{ScopeToken, Secret};
+use komainu::AesGcmKeySealer;
+use komainu::adapter_std::OsSecureRandom;
+use komainu::domain::{GrantType, ScopeToken, Secret, SigningAlgorithm, TokenEndpointAuthMethod};
 use komainu::http::{ContentSecurityPolicy, HttpConfig, HttpConfigError};
 use serde::Deserialize;
 
@@ -36,6 +39,17 @@ access_token_ttl_secs = 3600
 refresh_token_ttl_secs = 2592000
 authorization_request_ttl_secs = 600
 require_state = false
+disabled_grant_types = []
+disabled_auth_methods = []
+
+[signing]
+# Empty disables signing. Generate with `komainu key generate-encryption-key`.
+encryption_key = ""
+algorithms = ["ES256"]
+active_days = 90
+prepublish_days = 7
+retire_overlap_days = 7
+rotation_interval_secs = 3600
 
 [clients]
 allow_public = false
@@ -78,6 +92,7 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub session: SessionConfig,
     pub oauth: OauthConfig,
+    pub signing: SigningSection,
     pub clients: ClientsConfig,
     #[serde(default)]
     pub scopes: Vec<ScopeConfig>,
@@ -121,6 +136,26 @@ pub struct OauthConfig {
     pub refresh_token_ttl_secs: u64,
     pub authorization_request_ttl_secs: u64,
     pub require_state: bool,
+    pub disabled_grant_types: Vec<String>,
+    pub disabled_auth_methods: Vec<String>,
+}
+
+/// `[signing]`. An empty `encryption_key` leaves signing disabled.
+#[derive(Debug, Deserialize)]
+pub struct SigningSection {
+    pub encryption_key: Secret<String>,
+    pub algorithms: Vec<String>,
+    pub active_days: u64,
+    pub prepublish_days: u64,
+    pub retire_overlap_days: u64,
+    pub rotation_interval_secs: u64,
+}
+
+impl SigningSection {
+    /// Whether signing is turned on.
+    pub fn enabled(&self) -> bool {
+        !self.encryption_key.expose_secret_ref().trim().is_empty()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,10 +318,91 @@ pub fn validate(config: &mut Config) -> Result<(), ConfigError> {
         return Err(invalid("server.listen and ops.listen must differ"));
     }
 
+    validate_extension_points(&config.oauth)?;
+    validate_signing(&config.signing)?;
+
     validate_log_filter(&config.log)?;
 
     if config.server.public_base_url.starts_with("https://") && !config.session.cookie_secure {
         tracing::warn!("session.cookie_secure is false although public_base_url uses https");
+    }
+    Ok(())
+}
+
+fn validate_extension_points(oauth: &OauthConfig) -> Result<(), ConfigError> {
+    for value in &oauth.disabled_grant_types {
+        match value.parse::<GrantType>() {
+            Ok(GrantType::AuthorizationCode) => {
+                return Err(invalid(
+                    "oauth.disabled_grant_types: authorization_code cannot be disabled",
+                ));
+            }
+            Ok(_) => {}
+            Err(_) => {
+                return Err(invalid(format!(
+                    "oauth.disabled_grant_types: unknown grant type: {value}"
+                )));
+            }
+        }
+    }
+    for value in &oauth.disabled_auth_methods {
+        if value.parse::<TokenEndpointAuthMethod>().is_err() {
+            return Err(invalid(format!(
+                "oauth.disabled_auth_methods: unknown authentication method: {value}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Never puts `signing.encryption_key` into a message.
+/// Upper bound for the `signing.*_days` settings, so date arithmetic cannot overflow.
+const MAX_SIGNING_DAYS: u64 = 36_500;
+
+fn validate_signing(signing: &SigningSection) -> Result<(), ConfigError> {
+    if signing.enabled()
+        && AesGcmKeySealer::from_base64(&signing.encryption_key, Arc::new(OsSecureRandom)).is_err()
+    {
+        return Err(invalid(
+            "signing.encryption_key must be 32 bytes in standard base64 (see `komainu key generate-encryption-key`)",
+        ));
+    }
+    for value in &signing.algorithms {
+        if value.parse::<SigningAlgorithm>().is_err() {
+            return Err(invalid(format!(
+                "signing.algorithms: unknown algorithm: {value}"
+            )));
+        }
+    }
+    for (name, value) in [
+        ("signing.active_days", signing.active_days),
+        ("signing.prepublish_days", signing.prepublish_days),
+    ] {
+        if value == 0 {
+            return Err(invalid(format!("{name} must be 1 or greater")));
+        }
+    }
+    for (name, value) in [
+        ("signing.active_days", signing.active_days),
+        ("signing.prepublish_days", signing.prepublish_days),
+        ("signing.retire_overlap_days", signing.retire_overlap_days),
+    ] {
+        if value > MAX_SIGNING_DAYS {
+            return Err(invalid(format!(
+                "{name} must be {MAX_SIGNING_DAYS} or less"
+            )));
+        }
+    }
+    if signing.prepublish_days >= signing.active_days {
+        return Err(invalid(
+            "signing.prepublish_days must be less than signing.active_days",
+        ));
+    }
+    let prepublish_secs = signing.prepublish_days.saturating_mul(86_400);
+    if signing.rotation_interval_secs < 60 || signing.rotation_interval_secs >= prepublish_secs {
+        return Err(invalid(
+            "signing.rotation_interval_secs must be 60 or greater and less than signing.prepublish_days in seconds",
+        ));
     }
     Ok(())
 }
@@ -457,6 +573,84 @@ mod tests {
             let debug = format!("{config:?}");
             assert!(!debug.contains("hunter2-password"), "{debug}");
             assert!(debug.contains("[REDACTED]"), "{debug}");
+            Ok(())
+        });
+    }
+
+    const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+    /// The example file with `extra` added to `section`. `[signing]` is added by the test itself.
+    fn with_section(section: &str, extra: &str) -> String {
+        if section == "[signing]" {
+            let base = EXAMPLE.replace("[signing]\n", "");
+            format!("{base}\n[signing]\n{extra}\n")
+        } else {
+            EXAMPLE.replace(section, &format!("{section}\n{extra}"))
+        }
+    }
+
+    fn with_extra(jail: &Jail, section: &str, extra: &str) -> Result<Config, ConfigError> {
+        let file = with_section(section, extra);
+        jail.create_file("komainu.toml", &file).expect("write");
+        load_validated(jail)
+    }
+
+    #[test]
+    fn signing_is_disabled_by_default() {
+        Jail::expect_with(|jail| {
+            jail.create_file("komainu.toml", EXAMPLE)?;
+            let config = load_validated(jail).expect("valid");
+            assert!(!config.signing.enabled());
+            assert!(config.oauth.disabled_grant_types.is_empty());
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn signing_settings_are_validated() {
+        Jail::expect_with(|jail| {
+            let ok = with_extra(jail, "[signing]", &format!("encryption_key = \"{KEY}\""))
+                .expect("valid");
+            assert!(ok.signing.enabled());
+            let bad = [
+                "encryption_key = \"hunter2-not-base64\"",
+                "encryption_key = \"AAAA\"",
+                "algorithms = [\"HS256\"]",
+                "active_days = 0",
+                "prepublish_days = 0",
+                "prepublish_days = 90",
+                "rotation_interval_secs = 59",
+                "rotation_interval_secs = 604800",
+                "active_days = 36501",
+                "retire_overlap_days = 100000000000000000",
+            ];
+            for line in bad {
+                let error = with_extra(jail, "[signing]", line)
+                    .expect_err(line)
+                    .to_string();
+                assert!(error.contains("signing."), "{line}: {error}");
+                assert!(!error.contains("hunter2"), "{error}");
+            }
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn disabled_lists_are_validated() {
+        Jail::expect_with(|jail| {
+            with_extra(
+                jail,
+                "[oauth]",
+                "disabled_grant_types = [\"client_credentials\"]\ndisabled_auth_methods = [\"none\"]",
+            )
+            .expect("valid");
+            for line in [
+                "disabled_grant_types = [\"authorization_code\"]",
+                "disabled_grant_types = [\"bogus\"]",
+                "disabled_auth_methods = [\"bogus\"]",
+            ] {
+                with_extra(jail, "[oauth]", line).expect_err(line);
+            }
             Ok(())
         });
     }

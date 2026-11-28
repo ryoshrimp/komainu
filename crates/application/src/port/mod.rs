@@ -9,6 +9,7 @@ mod jwks;
 mod password;
 mod random;
 mod repository;
+mod sealer;
 mod store;
 mod subject;
 
@@ -18,6 +19,7 @@ pub use jwks::{JwksFetchError, JwksFetcher};
 pub use password::{PasswordHashError, PasswordHasher};
 pub use random::SecureRandom;
 pub use repository::*;
+pub use sealer::{KeySealer, SealError};
 pub use store::{ListPage, PurgeCounts, StoreError, UnitOfWork, UnitOfWorkFactory};
 pub use subject::{AssertionSubjectResolver, MappingTableSubjectResolver};
 

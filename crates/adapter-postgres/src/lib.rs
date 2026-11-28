@@ -16,6 +16,7 @@ mod grant;
 mod purge;
 mod refresh_token;
 mod session;
+mod signing_key;
 mod subject_mapping;
 mod trusted_issuer;
 mod uow;
@@ -98,7 +99,14 @@ pub async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         include_str!("../migrations/0004_assertion.sql").into_sql_str(),
         false,
     );
-    Migrator::with_migrations(vec![init, client_request, pkce, assertion])
+    let signing_keys = Migration::new(
+        5,
+        Cow::Borrowed("signing_keys"),
+        MigrationType::Simple,
+        include_str!("../migrations/0005_signing_keys.sql").into_sql_str(),
+        false,
+    );
+    Migrator::with_migrations(vec![init, client_request, pkce, assertion, signing_keys])
         .run(pool)
         .await
         .map_err(|e| StoreError::Other(format!("migration failed: {e}")))

@@ -19,6 +19,9 @@ use crate::state::{AppState, HttpConfig};
 #[non_exhaustive]
 pub struct AuthorizationServerMetadata {
     pub issuer: String,
+    /// Set when signing keys are enabled (see `AppState::with_signing_keys`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jwks_uri: Option<String>,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub revocation_endpoint: String,
@@ -46,6 +49,7 @@ impl AuthorizationServerMetadata {
             token_endpoint: format!("{issuer}/token"),
             revocation_endpoint: format!("{issuer}/revoke"),
             issuer,
+            jwks_uri: None,
             response_types_supported: capabilities
                 .response_types
                 .iter()

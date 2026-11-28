@@ -117,6 +117,27 @@ impl AdminService {
         Self { deps }
     }
 
+    fn check_enabled(
+        &self,
+        auth_method: Option<TokenEndpointAuthMethod>,
+        grant_types: Option<&BTreeSet<GrantType>>,
+    ) -> Result<(), AdminError> {
+        let config = &self.deps.config;
+        if let Some(method) = auth_method
+            && config.disabled_auth_methods.contains(&method)
+        {
+            return Err(AdminError::AuthMethodDisabled(method));
+        }
+        if let Some(grant) = grant_types
+            .into_iter()
+            .flatten()
+            .find(|g| config.disabled_grant_types.contains(g))
+        {
+            return Err(AdminError::GrantTypeDisabled(*grant));
+        }
+        Ok(())
+    }
+
     fn check_scopes(&self, scopes: &ScopeSet) -> Result<(), AdminError> {
         for scope in scopes.iter() {
             if !self.deps.config.scopes.iter().any(|d| d.name == *scope) {
@@ -179,6 +200,7 @@ impl AdminService {
         input: RegisterClient,
     ) -> Result<RegisteredClient, AdminError> {
         let deps = &self.deps;
+        self.check_enabled(Some(input.auth_method), Some(&input.grant_types))?;
         if input.client_type == ClientType::Public && !deps.config.allow_public_clients {
             return Err(AdminError::PublicClientsDisabled);
         }
@@ -224,6 +246,7 @@ impl AdminService {
         update: ClientUpdate,
     ) -> Result<ClientView, AdminError> {
         let deps = &self.deps;
+        self.check_enabled(update.auth_method, update.grant_types.as_ref())?;
         if let Some(scopes) = &update.allowed_scopes {
             self.check_scopes(scopes)?;
         }

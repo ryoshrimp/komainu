@@ -10,7 +10,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::wiring::{Settings, services};
-use crate::{Exit, cleanup, ops};
+use crate::{Exit, cleanup, ops, rotation};
 
 /// `komainu migrate`: applies the embedded migrations.
 pub(crate) async fn run_migrate(settings: Settings) -> Result<(), Exit> {
@@ -48,10 +48,24 @@ pub(crate) async fn run_serve(
         ops_listen,
         shutdown_timeout,
         cleanup: cleanup_config,
+        key_sealer,
+        rotation_interval,
         ..
     } = settings;
-    let services =
-        services(PgUnitOfWorkFactory::new(pool), application, http).map_err(Exit::runtime)?;
+    let services = services(
+        PgUnitOfWorkFactory::new(pool),
+        application,
+        http,
+        key_sealer,
+    )
+    .map_err(Exit::runtime)?;
+    let signing_keys = services.komainu.signing_keys().cloned();
+    if let Some(service) = &signing_keys
+        && let Err(error) = rotation::run_once(service).await
+    {
+        tracing::error!(%error, "initial signing key rotation failed");
+        return Err(Exit::runtime(error));
+    }
 
     let main_listener = bind(listen).await?;
     let ops_listener = bind(ops_listen).await?;
@@ -81,6 +95,14 @@ pub(crate) async fn run_serve(
         let maintenance = services.komainu.maintenance().clone();
         tasks.spawn(async move {
             cleanup::run_periodic(maintenance, interval, stop).await;
+            Ok(())
+        });
+    }
+
+    if let Some(service) = signing_keys {
+        let stop = stopped(stop_rx.clone());
+        tasks.spawn(async move {
+            rotation::run_periodic(service, rotation_interval, stop).await;
             Ok(())
         });
     }

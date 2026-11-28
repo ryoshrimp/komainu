@@ -1,4 +1,4 @@
-use komainu_domain::{ClientId, DomainError};
+use komainu_domain::{ClientId, DomainError, GrantType, TokenEndpointAuthMethod};
 
 use crate::port::{PasswordHashError, StoreError};
 
@@ -14,6 +14,12 @@ pub enum AdminError {
     /// `client_type=public` while `allow_public_clients=false`.
     #[error("public clients are disabled")]
     PublicClientsDisabled,
+    /// The client's `auth_method` is in `ApplicationConfig::disabled_auth_methods`.
+    #[error("client authentication method is disabled: {}", .0.as_str())]
+    AuthMethodDisabled(TokenEndpointAuthMethod),
+    /// The client's `grant_types` has one in `ApplicationConfig::disabled_grant_types`.
+    #[error("grant type is disabled: {}", .0.as_str())]
+    GrantTypeDisabled(GrantType),
     /// `jwks` is not a usable JWK Set (parse failure, private key, or not 1 to 10 keys).
     #[error("invalid jwks: {0}")]
     InvalidJwks(String),

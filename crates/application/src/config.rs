@@ -1,5 +1,10 @@
-use komainu_domain::ScopeToken;
+use std::collections::BTreeSet;
+
+use komainu_domain::{GrantType, ScopeToken, TokenEndpointAuthMethod};
 use time::Duration;
+
+use crate::signing::SigningConfig;
+use crate::token::AuthMethodRegistry;
 
 /// A scope the server knows, with its consent-screen description.
 #[derive(Debug, Clone)]
@@ -33,6 +38,13 @@ pub struct ApplicationConfig {
     /// Assertions must have this value or `"{issuer}/token"` as `aud`. `None` disables
     /// `private_key_jwt` and jwt-bearer. Defaults to `None`.
     pub issuer: Option<String>,
+    /// Signing keys of the AS. `None` means the AS signs nothing. Defaults to `None`.
+    pub signing: Option<SigningConfig>,
+    /// Grant types turned off. Must not contain `AuthorizationCode` (see [`Self::validate`]).
+    /// Defaults to empty.
+    pub disabled_grant_types: BTreeSet<GrantType>,
+    /// Client authentication methods turned off. Defaults to empty.
+    pub disabled_auth_methods: BTreeSet<TokenEndpointAuthMethod>,
 }
 
 impl ApplicationConfig {
@@ -112,6 +124,61 @@ impl ApplicationConfig {
         self.issuer = Some(value.into());
         self
     }
+
+    /// Sets `signing`.
+    #[must_use]
+    pub fn with_signing(mut self, value: SigningConfig) -> Self {
+        self.signing = Some(value);
+        self
+    }
+
+    /// Sets `disabled_grant_types`.
+    #[must_use]
+    pub fn with_disabled_grant_types(mut self, value: BTreeSet<GrantType>) -> Self {
+        self.disabled_grant_types = value;
+        self
+    }
+
+    /// Sets `disabled_auth_methods`.
+    #[must_use]
+    pub fn with_disabled_auth_methods(mut self, value: BTreeSet<TokenEndpointAuthMethod>) -> Self {
+        self.disabled_auth_methods = value;
+        self
+    }
+
+    /// Checks combinations of settings that cannot work together. Returns the first
+    /// violation.
+    pub fn validate(&self) -> Result<(), ApplicationConfigError> {
+        if self
+            .disabled_grant_types
+            .contains(&GrantType::AuthorizationCode)
+        {
+            return Err(ApplicationConfigError::AuthorizationCodeDisabled);
+        }
+        if AuthMethodRegistry::builtin(self).available(self).is_empty() {
+            return Err(ApplicationConfigError::NoAuthMethod);
+        }
+        if let Some(signing) = &self.signing
+            && signing.policy().retire_overlap() < self.access_token_ttl
+        {
+            return Err(ApplicationConfigError::RetireOverlapTooShort);
+        }
+        Ok(())
+    }
+}
+
+/// An invalid [`ApplicationConfig`].
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ApplicationConfigError {
+    /// `disabled_grant_types` contains `AuthorizationCode`.
+    #[error("authorization_code cannot be disabled")]
+    AuthorizationCodeDisabled,
+    /// Every client authentication method is disabled or unavailable.
+    #[error("at least one client authentication method must stay enabled")]
+    NoAuthMethod,
+    /// `signing.retire_overlap` is shorter than `access_token_ttl`.
+    #[error("signing retire overlap must be at least the access token lifetime")]
+    RetireOverlapTooShort,
 }
 
 impl Default for ApplicationConfig {
@@ -128,6 +195,9 @@ impl Default for ApplicationConfig {
             purge_grace: Duration::hours(24),
             audit_retention: Duration::days(90),
             issuer: None,
+            signing: None,
+            disabled_grant_types: BTreeSet::new(),
+            disabled_auth_methods: BTreeSet::new(),
         }
     }
 }

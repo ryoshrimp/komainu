@@ -423,6 +423,7 @@ async fn e2e_full_scenario_and_no_secrets_in_logs() {
         PgUnitOfWorkFactory::new(db.pool.clone()),
         settings.application,
         settings.http,
+        settings.key_sealer,
     )
     .unwrap();
     let verify = |token: String| {
