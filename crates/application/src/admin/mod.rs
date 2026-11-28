@@ -127,9 +127,16 @@ impl AdminService {
     }
 
     /// A `jwks` document must hold 1 to 10 usable public keys. `jwks_uri` is not fetched here.
-    fn check_keys(keys: Option<&ClientKeys>) -> Result<(), AdminError> {
-        if let Some(ClientKeys::Jwks(doc)) = keys {
-            Self::check_jwks(doc)?;
+    fn check_keys(&self, keys: Option<&ClientKeys>) -> Result<(), AdminError> {
+        match keys {
+            Some(ClientKeys::Jwks(doc)) => Self::check_jwks(doc)?,
+            // Without a fetcher such a client could never authenticate.
+            Some(ClientKeys::JwksUri(_)) if !self.deps.jwks.has_fetcher() => {
+                return Err(AdminError::InvalidJwks(
+                    "jwks_uri needs a JWKS fetcher, and none is configured".to_owned(),
+                ));
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -176,7 +183,7 @@ impl AdminService {
             return Err(AdminError::PublicClientsDisabled);
         }
         self.check_scopes(&input.allowed_scopes)?;
-        Self::check_keys(input.keys.as_ref())?;
+        self.check_keys(input.keys.as_ref())?;
         let secret = matches!(
             input.auth_method,
             TokenEndpointAuthMethod::ClientSecretBasic | TokenEndpointAuthMethod::ClientSecretPost
@@ -220,7 +227,7 @@ impl AdminService {
         if let Some(scopes) = &update.allowed_scopes {
             self.check_scopes(scopes)?;
         }
-        Self::check_keys(update.keys.as_ref())?;
+        self.check_keys(update.keys.as_ref())?;
         let mut uow = deps.store.begin().await?;
         let mut client = Self::load_client(uow.as_mut(), id).await?;
         client.update(update, deps.clock.now())?;

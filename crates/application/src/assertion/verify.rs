@@ -11,8 +11,9 @@ pub(crate) struct Expected<'a> {
     pub issuer: &'a str,
     /// If `Some`, `sub` must equal it (client authentication: the `client_id`).
     pub subject: Option<&'a str>,
-    /// `[issuer, "{issuer}/token"]`; `aud` must contain at least one.
-    pub audiences: [&'a str; 2],
+    /// The issuer and the endpoint URLs that may be the audience; `aud` must contain at
+    /// least one. Must not be empty.
+    pub audiences: &'a [&'a str],
 }
 
 /// The claims of an assertion that passed [`verify_assertion`].
@@ -95,8 +96,15 @@ pub(crate) fn verify_assertion(
     expected: &Expected<'_>,
     now: OffsetDateTime,
 ) -> Result<VerifiedAssertion, AssertionError> {
-    let validation = Validation::new(expected.issuer, expected.audiences[0])
-        .accept_audience(expected.audiences[1])
+    let (first, rest) = expected
+        .audiences
+        .split_first()
+        .expect("Expected::audiences is not empty");
+    let validation = rest
+        .iter()
+        .fold(Validation::new(expected.issuer, *first), |v, aud| {
+            v.accept_audience(*aud)
+        })
         .leeway(ASSERTION_LEEWAY.unsigned_abs())
         .max_token_len(ASSERTION_MAX_LEN);
     let registered = jwt::decode::<NoCustomClaims>(token, keys, &validation, now)?
@@ -159,7 +167,7 @@ mod tests {
         Expected {
             issuer: ISS,
             subject: None,
-            audiences: [AS, "https://as.example.com/token"],
+            audiences: &[AS, "https://as.example.com/token"],
         }
     }
 

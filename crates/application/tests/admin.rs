@@ -243,12 +243,25 @@ mod keys {
         );
         assert!(matches!(registered.client.keys, Some(ClientKeys::Jwks(_))));
         // The uri form is accepted without fetching.
+        let (fx, fetcher) = assertion_fixture();
         let by_uri = block_on(
             fx.admin
                 .register_client(&ctx(), private_key_jwt(ClientKeys::JwksUri(jwks_uri()))),
         )
         .unwrap();
         assert!(matches!(by_uri.client.keys, Some(ClientKeys::JwksUri(_))));
+        assert_eq!(fetcher.calls(&jwks_uri()), 0);
+    }
+
+    #[test]
+    fn jwks_uri_is_rejected_without_a_fetcher() {
+        let fx = Fixture::new();
+        let err = block_on(
+            fx.admin
+                .register_client(&ctx(), private_key_jwt(ClientKeys::JwksUri(jwks_uri()))),
+        )
+        .unwrap_err();
+        assert!(matches!(err, AdminError::InvalidJwks(_)), "{err:?}");
     }
 
     #[test]

@@ -822,11 +822,19 @@ fn jwks_uri_fetch_failure_is_key_fetch_failed() {
     // The URI has no configured response (404).
     assert!(token_with(&fx, assertion_auth(None, assertion(&fx, &key, &id, "1"))).is_err());
     assert_eq!(failure_reasons(&fx), ["key_fetch_failed"]);
-    // No fetcher at all.
-    let fx2 = Fixture::with_config(config().with_issuer(ISSUER));
-    let id2 = register_private_key_jwt(&fx2, ClientKeys::JwksUri(jwks_uri()));
-    assert!(token_with(&fx2, assertion_auth(None, assertion(&fx2, &key, &id2, "1"))).is_err());
-    assert_eq!(failure_reasons(&fx2), ["key_fetch_failed"]);
+    // Without a fetcher such a client cannot be registered (tests/admin.rs).
+}
+
+#[test]
+fn issuer_with_a_trailing_slash_accepts_the_advertised_audiences() {
+    let (fx, _) = assertion_fixture_with_issuer(&format!("{ISSUER}/"));
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let cid = id.as_inner();
+    for (jti, aud) in [("a", ISSUER.to_owned()), ("b", format!("{ISSUER}/token"))] {
+        let jwt = assertion_with(&fx, &key, cid, cid, jti, &aud, 60);
+        token_with(&fx, assertion_auth(None, jwt)).unwrap();
+    }
 }
 
 #[test]
@@ -839,6 +847,25 @@ fn assertion_with_token_endpoint_audience_is_accepted() {
     let jwt = assertion_with(&fx, &key, cid, cid, "aud-token", &aud, 60);
     token_with(&fx, assertion_auth(None, jwt)).unwrap();
     assert!(failure_reasons(&fx).is_empty());
+}
+
+#[test]
+fn revocation_endpoint_audience_is_accepted_only_at_revoke() {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let cid = id.as_inner();
+    let aud = format!("{ISSUER}/revoke");
+    let jwt = assertion_with(&fx, &key, cid, cid, "aud-revoke-1", &aud, 60);
+    assert!(token_with(&fx, assertion_auth(None, jwt)).is_err());
+    assert_eq!(failure_reasons(&fx), ["audience"]);
+    let jwt = assertion_with(&fx, &key, cid, cid, "aud-revoke-2", &aud, 60);
+    let request = komainu_application::RevocationRequest {
+        token: Some("unknown-token".to_owned()),
+        ..komainu_application::RevocationRequest::default()
+    };
+    block_on(fx.token.revoke(&ctx(), assertion_auth(None, jwt), request)).unwrap();
+    assert_eq!(failure_reasons(&fx), ["audience"]);
 }
 
 #[test]

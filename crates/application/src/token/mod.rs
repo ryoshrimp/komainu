@@ -35,6 +35,13 @@ pub struct TokenService {
     deps: Dependencies,
 }
 
+/// The endpoint that a client authenticates at. A client assertion may name it as `aud`.
+#[derive(Clone, Copy)]
+enum Endpoint {
+    Token,
+    Revocation,
+}
+
 /// Why `authenticate_assertion` did not accept.
 enum AssertionRejected {
     /// `client_id` and the assertion's `iss` differ (400, not audited).
@@ -122,7 +129,9 @@ impl TokenService {
             }
             Some(_) => return Err(TokenError::UnsupportedGrantType),
         };
-        let (mut uow, client) = self.authenticate_client(ctx, &auth).await?;
+        let (mut uow, client) = self
+            .authenticate_client(ctx, &auth, Endpoint::Token)
+            .await?;
         if !client.supports_grant(grant_type) {
             return Err(TokenError::UnauthorizedClient);
         }
@@ -185,7 +194,10 @@ impl TokenService {
             return Err(RevocationError::InvalidRequest);
         }
         let raw = request.token.ok_or(RevocationError::InvalidRequest)?;
-        let (mut uow, client) = match self.authenticate_client(ctx, &auth).await {
+        let (mut uow, client) = match self
+            .authenticate_client(ctx, &auth, Endpoint::Revocation)
+            .await
+        {
             Ok(authenticated) => authenticated,
             Err(TokenError::InvalidClient { basic_attempted }) => {
                 return Err(RevocationError::InvalidClient { basic_attempted });
@@ -295,6 +307,7 @@ impl TokenService {
         &self,
         ctx: &RequestContext,
         auth: &ClientAuthentication,
+        endpoint: Endpoint,
     ) -> Result<(Box<dyn UnitOfWork>, Client), TokenError> {
         let deps = &self.deps;
         let (method, presented, secret, basic) = match auth {
@@ -303,7 +316,7 @@ impl TokenService {
                 assertion,
             } => {
                 return self
-                    .authenticate_assertion(ctx, client_id.as_deref(), assertion)
+                    .authenticate_assertion(ctx, client_id.as_deref(), assertion, endpoint)
                     .await;
             }
             ClientAuthentication::Basic { client_id, secret } => {
@@ -384,6 +397,16 @@ impl TokenService {
         audit_uow.commit().await
     }
 
+    /// The configured issuer without a trailing `/`, so that `"{issuer}/token"` is the
+    /// token endpoint that the metadata advertises.
+    fn own_issuer(&self) -> Option<&str> {
+        self.deps
+            .config
+            .issuer
+            .as_deref()
+            .map(|issuer| issuer.trim_end_matches('/'))
+    }
+
     /// `private_key_jwt` (RFC 7523 §2.2). On rejection the failure is audited in a new unit
     /// of work.
     async fn authenticate_assertion(
@@ -391,10 +414,16 @@ impl TokenService {
         ctx: &RequestContext,
         client_id: Option<&str>,
         assertion: &Secret<String>,
+        endpoint: Endpoint,
     ) -> Result<(Box<dyn UnitOfWork>, Client), TokenError> {
         let mut presented = client_id.map(str::to_owned);
         match self
-            .verify_client_assertion(client_id, assertion.expose_secret_ref(), &mut presented)
+            .verify_client_assertion(
+                client_id,
+                assertion.expose_secret_ref(),
+                endpoint,
+                &mut presented,
+            )
             .await
         {
             Ok(authenticated) => Ok(authenticated),
@@ -426,10 +455,11 @@ impl TokenService {
         &self,
         client_id: Option<&str>,
         assertion: &str,
+        endpoint: Endpoint,
         presented: &mut Option<String>,
     ) -> Result<(Box<dyn UnitOfWork>, Client), AssertionRejected> {
         let deps = &self.deps;
-        let Some(issuer) = deps.config.issuer.as_deref() else {
+        let Some(issuer) = self.own_issuer() else {
             return Err("not_configured".into());
         };
         let claims = jwt::peek_unverified(assertion, ASSERTION_MAX_LEN)
@@ -471,10 +501,15 @@ impl TokenService {
         };
         let now = deps.clock.now();
         let token_endpoint = format!("{issuer}/token");
+        let revocation_endpoint = format!("{issuer}/revoke");
+        let audiences = match endpoint {
+            Endpoint::Token => vec![issuer, &token_endpoint],
+            Endpoint::Revocation => vec![issuer, &token_endpoint, &revocation_endpoint],
+        };
         let expected = Expected {
             issuer: &iss,
             subject: Some(&iss),
-            audiences: [issuer, &token_endpoint],
+            audiences: &audiences,
         };
         let verified = match verify_assertion(assertion, keys.keys(), &expected, now) {
             Err(AssertionError::KeyNotFound) if let Some(uri) = uri => {
@@ -672,11 +707,7 @@ impl TokenService {
     ) -> Result<Step, TokenError> {
         let deps = &self.deps;
         // `exchange` already refused the grant without an issuer.
-        let own_issuer = deps
-            .config
-            .issuer
-            .as_deref()
-            .ok_or(TokenError::UnsupportedGrantType)?;
+        let own_issuer = self.own_issuer().ok_or(TokenError::UnsupportedGrantType)?;
         let assertion = request
             .assertion
             .as_deref()
@@ -775,7 +806,7 @@ impl TokenService {
         let expected = Expected {
             issuer: &iss,
             subject: None,
-            audiences: [own_issuer, &token_endpoint],
+            audiences: &[own_issuer, &token_endpoint],
         };
         let verified = verify_assertion(assertion, keys.keys(), &expected, now)
             .map_err(|e| AssertionRejected::from(e.reason()))?;

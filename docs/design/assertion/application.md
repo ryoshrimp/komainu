@@ -73,7 +73,8 @@ pub struct TokenRequest {
 pub struct ApplicationConfig {
     // 既存フィールド
     /// サーバーの issuer 識別子（例 "https://as.example.com"、末尾 / なし）。
-    /// アサーションの aud として、この値と "{issuer}/token" を受け入れる。
+    /// アサーションの aud として、この値と "{issuer}/token" を受け入れる（/revoke では "{issuer}/revoke" も）。
+    /// 末尾の "/" は使うときに取り除く。
     /// None なら private_key_jwt と jwt-bearer は無効（広告もしない）。既定 None。
     pub issuer: Option<String>,
 }
@@ -235,12 +236,13 @@ impl JwksResolver {
 }
 ```
 
-- キャッシュは `std::sync::Mutex<HashMap<JwksUri, CacheEntry>>`（`CacheEntry { keys: Option<(Arc<JwkSet>, fetched_at)>, last_attempt: OffsetDateTime }`）。tokio などの非同期ロックは使わない。application に足す依存は `komainu-jose` だけ。
+- キャッシュは `std::sync::Mutex<HashMap<JwksUri, CacheEntry>>`（`CacheEntry { keys: Option<(Arc<JwkSet>, fetched_at)>, last_attempt: Option<OffsetDateTime>, fetching: usize }`）。tokio などの非同期ロックは使わない。application に足す依存は `komainu-jose` だけ。
 - 有効判定: `now - fetched_at < JWKS_CACHE_TTL` なら有効（ちょうど TTL で無効。T+3600 秒で再取得する受け入れ条件と同じ）。再取得の可否: `now - last_attempt >= JWKS_MIN_REFETCH_INTERVAL` なら取得してよい。
 - `JwksResolver` は `Clone` にしない。`Dependencies` には `jwks: Arc<JwksResolver>` で持たせ、`Dependencies` の `Clone` はこの `Arc` を共有する（キャッシュは 1 つ）。
 - `fetch` の成功本文は `JwkSet::from_json` でパースし、失敗または鍵 0 個なら `InvalidJwks`（キャッシュは更新しない、`last_attempt` は更新する）。
-- ロックは `await` をまたいで持たない（ロック → 判定 → 解放 → fetch → ロック → 書き込み）。同じ URI への同時取得の重複は許す。
+- ロックは `await` をまたいで持たない（ロック → 判定・`fetching` を 1 増やす → 解放 → fetch → ロック → 書き込み・`fetching` を 1 減らす）。終わりの書き込みは drop されるガードで行い、取得中に future が捨てられても `fetching` を戻す。`last_attempt` と `fetched_at` には取得を始めた時刻を入れる。重なった取得では、始めた時刻の新しい方の鍵を残す。
 - 取得失敗時は `last_attempt` だけ更新し、既存のキャッシュは消さないが返しもしない（D-6）。
+- 同じ URI の取得が進行中（`fetching > 0`）なら、`Refresh` は「前回から間もない」と同じ扱いにする（有効な鍵があれば返し、なければ `RefetchTooSoon`）。未知の `kid` による取得の積み増しを防ぐため。`Cached` で有効な鍵がない要求は、進行中の取得があっても取りに行く（起動直後や TTL 切れの正規の要求を失敗させないため。重複は許す）。
 - エントリー数の上限は設けない（URI はクライアント登録数で抑えられる）。
 
 ### verify_assertion（`crates/application/src/assertion/verify.rs`）
@@ -250,8 +252,8 @@ pub(crate) struct Expected<'a> {
     pub issuer: &'a str,
     /// Some なら sub がこの値と一致しなければならない（クライアント認証では client_id）。
     pub subject: Option<&'a str>,
-    /// [issuer, "{issuer}/token"]。
-    pub audiences: [&'a str; 2],
+    /// [issuer, "{issuer}/token"]。/revoke でのクライアント認証では "{issuer}/revoke" も加える。
+    pub audiences: &'a [&'a str],
 }
 
 pub(crate) struct VerifiedAssertion {
@@ -291,7 +293,7 @@ application はデータを持たない（キャッシュはメモリのみ）�
 
 ### verify_assertion の手順
 
-1. `jose::jwt::decode::<NoCustomClaims>(token, keys, &Validation::new(expected.issuer, audiences[0]).accept_audience(audiences[1]).leeway(ASSERTION_LEEWAY).max_token_len(ASSERTION_MAX_LEN), now)`。alg は jose が RS256 / ES256 以外（`none`、`HS*` を含む）を拒否する。`typ` は要求しない。
+1. `jose::jwt::decode::<NoCustomClaims>(token, keys, &Validation::new(expected.issuer, audiences[0])` に残りの要素を `.accept_audience(..)` で足し、`.leeway(ASSERTION_LEEWAY).max_token_len(ASSERTION_MAX_LEN), now)`。alg は jose が RS256 / ES256 以外（`none`、`HS*` を含む）を拒否する。`typ` は要求しない。
 2. jose のエラーを写す（`JoseError` の全バリアント）:
 
 | `JoseError` | `AssertionError` | reason |
@@ -440,7 +442,7 @@ impl AdminService {
 
 上の形は既存の `register_client` / `disable_client`（`ctx: &RequestContext` を取る）と `get_client` / `list_clients`（`_ctx` を取るが使わない）に揃えてある。`list_issuers` / `list_subject_mappings` は `list_clients` と同じく `ListPage` を値で受け取り、`ListPage { limit: page.limit.clamp(1, 1000), ..page }` にしてから repository に `&page` を渡す。
 
-- JWKS の検査（クライアントの `ClientKeys::Jwks` と発行者の `jwks`）: `JwkSet::from_json` が成功し、読み込めた鍵（`from_json` が対応外の kty / crv / use / alg を読み飛ばした後の数）が 1〜10 個。JSON 上の要素数には別の上限を設けない（長さは `JwksDocument` の 65536 バイトで抑える）。失敗は `AdminError::InvalidJwks(String)`。文字列は jose のエラーなら `JoseError` の `Display`、鍵数なら `"expected 1 to 10 usable keys, found N"`。秘密鍵成分を含む JWK は jose が `InvalidKey("private key parameters")` で拒否する。`ClientKeys::JwksUri` は登録時に取得しない。
+- JWKS の検査（クライアントの `ClientKeys::Jwks` と発行者の `jwks`）: `JwkSet::from_json` が成功し、読み込めた鍵（`from_json` が対応外の kty / crv / use / alg を読み飛ばした後の数）が 1〜10 個。JSON 上の要素数には別の上限を設けない（長さは `JwksDocument` の 65536 バイトで抑える）。失敗は `AdminError::InvalidJwks(String)`。文字列は jose のエラーなら `JoseError` の `Display`、鍵数なら `"expected 1 to 10 usable keys, found N"`。秘密鍵成分を含む JWK は jose が `InvalidKey("private key parameters")` で拒否する。`ClientKeys::JwksUri` は登録時に取得しない。fetcher のない構成では、`ClientKeys::JwksUri` の登録・更新を `AdminError::InvalidJwks` で拒否する。
 - `register_issuer` / `update_issuer` の検査順: domain の不変条件（`allowed_clients` 1〜100 個など。`DomainError` → `AdminError::Invalid`）→ JWKS の検査 → クライアントの実在。
 - `register_issuer` / `update_issuer` の `allowed_clients` は全員が実在すること。いなければ `AdminError::UnknownClient(ClientId)`（最初に見つかった 1 つ）。操作対象（発行者）の不在ではなく入力値の誤りなので `NotFound`（終了コード 3）ではなく終了コード 2 にする。
 - `map_subject`: 発行者がなければ `NotFound`、`users().find_by_username` がなければ `NotFound`。無効なユーザーにも対応付けはできる（グラント時に拒否される）。`unmap_subject` は削除対象がなければ `NotFound`。
@@ -502,7 +504,7 @@ None の 2 行は既存と同じ値。T6 の時点では Some の行の `grant_t
 検証:
 
 - `now` = T、`exp` = T+60 の正しいアサーションは通る。`exp` = T+300 は通り、T+301 は `LifetimeTooLong`。`exp` = T-59 は通り、T-60 は `Expired`。
-- `aud` が `https://as.example.com`、`https://as.example.com/token`、両方を含む配列のどれでも通る。`https://as.example.com/revoke` は `Audience`。
+- `aud` が `https://as.example.com`、`https://as.example.com/token`、両方を含む配列のどれでも通る。`https://as.example.com/revoke` はトークンエンドポイントでは `Audience`、/revoke では通る。issuer を末尾 `/` 付きで設定しても同じ aud で通る。
 - `sub` なし → `MissingSubject`、`jti` なし・空・256 バイト → `MissingJti`。255 バイトは通る。
 - `alg=none` と `HS256` のヘッダーは通らない。RS256 鍵と ES256 鍵の両方で通る。
 
@@ -524,7 +526,7 @@ JWKS キャッシュ（`StaticJwksFetcher` は呼び出し回数を数える）:
 - 未発行トークンの `revoke` を同じアサーションで 2 回送ると、1 回目は `Ok(())`、2 回目は `RevocationError::InvalidClient`（reason `replay`）。トークンが見つかり grant がすでに無効な場合も同じ。
 - `revoke` で body の `client_id` とアサーションの `iss` が不一致なら `RevocationError::InvalidRequest`（http では 400 `invalid_request`）。
 - `issuer` 未設定の `ApplicationConfig` では、正しいアサーションでも `InvalidClient`（reason `not_configured`）。
-- `StaticJwksFetcher` に未設定の URI（`Status(404)`）でも、fetcher なしの `TestEnv` でも、`jwks_uri` のクライアントの監査 reason は `key_fetch_failed`。
+- `StaticJwksFetcher` に未設定の URI（`Status(404)`）なら、`jwks_uri` のクライアントの監査 reason は `key_fetch_failed`。fetcher なしの `TestEnv` では `jwks_uri` のクライアントを登録できない。同じ URI の取得が進行中なら `Refresh` は取得を重ねず、`Cached` で有効な鍵がない要求は取りに行く。取得中に future が捨てられても、後の `Refresh` は止まらない。
 
 グラント:
 

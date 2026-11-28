@@ -29,12 +29,16 @@ fn is_global_v4(ip: Ipv4Addr) -> bool {
 
 fn is_global_v6(ip: Ipv6Addr) -> bool {
     let s = ip.segments();
-    // ::ffff:0:0/96 (IPv4-mapped) and 64:ff9b::/96 (NAT64): judge by the embedded IPv4.
+    // ::ffff:0:0/96 (IPv4-mapped), ::ffff:0:0:0/96 (IPv4-translated) and 64:ff9b::/96 (NAT64):
+    // judge by the embedded IPv4.
     let embedded = |ip: Ipv6Addr| {
         let o = ip.octets();
         Ipv4Addr::new(o[12], o[13], o[14], o[15])
     };
     if s[..5] == [0, 0, 0, 0, 0] && s[5] == 0xffff {
+        return is_global_v4(embedded(ip));
+    }
+    if s[..4] == [0, 0, 0, 0] && s[4] == 0xffff && s[5] == 0 {
         return is_global_v4(embedded(ip));
     }
     if s[0] == 0x64 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
@@ -102,6 +106,9 @@ mod tests {
     fn embedded_ipv4_is_judged_by_the_ipv4_rules() {
         assert!(!is_global(ip("::ffff:127.0.0.1")));
         assert!(!is_global(ip("64:ff9b::10.0.0.1")));
+        assert!(!is_global(ip("::ffff:0:10.0.0.1")));
+        assert!(!is_global(ip("::ffff:0:127.0.0.1")));
+        assert!(is_global(ip("::ffff:0:8.8.8.8")));
         assert!(is_global(ip("::ffff:8.8.8.8")));
         assert!(is_global(ip("64:ff9b::8.8.8.8")));
     }

@@ -19,9 +19,13 @@ pub struct JwksResolver {
     cache: Mutex<HashMap<JwksUri, CacheEntry>>,
 }
 
+#[derive(Default)]
 struct CacheEntry {
     keys: Option<(Arc<JwkSet>, OffsetDateTime)>,
-    last_attempt: OffsetDateTime,
+    /// When the last finished fetch (successful or not) started.
+    last_attempt: Option<OffsetDateTime>,
+    /// Fetches of this URI that are running now.
+    fetching: usize,
 }
 
 impl CacheEntry {
@@ -59,6 +63,11 @@ impl JwksResolver {
         }
     }
 
+    /// Whether a fetcher was given, so that a `jwks_uri` can be used at all.
+    pub(crate) fn has_fetcher(&self) -> bool {
+        self.fetcher.is_some()
+    }
+
     pub(crate) async fn keys(
         &self,
         uri: &JwksUri,
@@ -71,10 +80,12 @@ impl JwksResolver {
         };
         let now = self.clock.now();
         {
-            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(entry) = cache.get(uri) {
                 let valid = entry.valid_keys(now);
-                let too_soon = now - entry.last_attempt < JWKS_MIN_REFETCH_INTERVAL;
+                let too_soon = entry
+                    .last_attempt
+                    .is_some_and(|at| now - at < JWKS_MIN_REFETCH_INTERVAL);
                 match freshness {
                     Freshness::Cached => {
                         if let Some(keys) = valid {
@@ -84,15 +95,25 @@ impl JwksResolver {
                             return Err(KeyResolveError::RefetchTooSoon);
                         }
                     }
-                    Freshness::Refresh if too_soon => {
+                    // A running fetch counts as too soon too, so that requests with an unknown
+                    // `kid` do not pile up fetches. Requests without valid keys still fetch.
+                    Freshness::Refresh if too_soon || entry.fetching > 0 => {
                         return valid.ok_or(KeyResolveError::RefetchTooSoon);
                     }
                     Freshness::Refresh => {}
                 }
             }
+            cache.entry(uri.clone()).or_default().fetching += 1;
         }
 
-        // The lock is not held across the fetch; concurrent fetches of one URI may duplicate.
+        // The lock is not held across the fetch. The guard also ends the fetch if this future
+        // is dropped before it finishes.
+        let mut guard = Fetching {
+            cache: &self.cache,
+            uri,
+            started: now,
+            keys: None,
+        };
         let result = fetcher.fetch(uri).await;
         let parsed = match result {
             Ok(body) => match JwkSet::from_json(&body) {
@@ -102,16 +123,40 @@ impl JwksResolver {
             Err(e) => Err(KeyResolveError::Fetch(e)),
         };
 
-        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = cache.entry(uri.clone()).or_insert(CacheEntry {
-            keys: None,
-            last_attempt: now,
-        });
-        entry.last_attempt = now;
         if let Ok(keys) = &parsed {
-            entry.keys = Some((Arc::clone(keys), now));
+            guard.keys = Some(Arc::clone(keys));
         }
         parsed
+    }
+}
+
+/// Records the end of a fetch in the cache when dropped.
+struct Fetching<'a> {
+    cache: &'a Mutex<HashMap<JwksUri, CacheEntry>>,
+    uri: &'a JwksUri,
+    started: OffsetDateTime,
+    keys: Option<Arc<JwkSet>>,
+}
+
+impl Drop for Fetching<'_> {
+    fn drop(&mut self) {
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = cache.entry(self.uri.clone()).or_default();
+        entry.fetching = entry.fetching.saturating_sub(1);
+        entry.last_attempt = Some(
+            entry
+                .last_attempt
+                .map_or(self.started, |at| at.max(self.started)),
+        );
+        // Keep the keys of the newest fetch when fetches overlap.
+        if let Some(keys) = self.keys.take()
+            && entry
+                .keys
+                .as_ref()
+                .is_none_or(|(_, at)| *at <= self.started)
+        {
+            entry.keys = Some((keys, self.started));
+        }
     }
 }
 
@@ -324,6 +369,90 @@ mod tests {
         f.advance(59);
         assert!(f.get(Freshness::Refresh).is_ok());
         assert_eq!(f.calls(), 2);
+    }
+
+    /// Stays pending until `open` is set.
+    struct GateFetcher {
+        calls: AtomicUsize,
+        open: std::sync::atomic::AtomicBool,
+        body: String,
+    }
+
+    impl JwksFetcher for GateFetcher {
+        fn fetch<'a>(&'a self, _uri: &'a JwksUri) -> BoxFuture<'a, Result<String, JwksFetchError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::poll_fn(move |_| {
+                if self.open.load(Ordering::SeqCst) {
+                    Poll::Ready(Ok(self.body.clone()))
+                } else {
+                    Poll::Pending
+                }
+            }))
+        }
+    }
+
+    #[test]
+    fn refresh_during_a_fetch_does_not_fetch_again() {
+        let f = Fixture::new();
+        let fetcher = Arc::new(GateFetcher {
+            calls: AtomicUsize::new(0),
+            open: std::sync::atomic::AtomicBool::new(false),
+            body: f.fetcher.body.lock().unwrap().clone(),
+        });
+        let resolver = JwksResolver::new(Some(fetcher.clone()), f.clock.clone());
+        let mut cx = Context::from_waker(Waker::noop());
+        let calls = || fetcher.calls.load(Ordering::SeqCst);
+        {
+            // No keys yet: an unknown kid is refused, a plain request fetches too.
+            let mut first = pin!(resolver.keys(&f.uri, Freshness::Cached));
+            assert!(first.as_mut().poll(&mut cx).is_pending());
+            let mut refresh = pin!(resolver.keys(&f.uri, Freshness::Refresh));
+            assert!(matches!(
+                refresh.as_mut().poll(&mut cx),
+                Poll::Ready(Err(KeyResolveError::RefetchTooSoon))
+            ));
+            let mut cached = pin!(resolver.keys(&f.uri, Freshness::Cached));
+            assert!(cached.as_mut().poll(&mut cx).is_pending());
+            assert_eq!(calls(), 2);
+            fetcher.open.store(true, Ordering::SeqCst);
+            assert!(matches!(first.as_mut().poll(&mut cx), Poll::Ready(Ok(_))));
+            assert!(matches!(cached.as_mut().poll(&mut cx), Poll::Ready(Ok(_))));
+        }
+        // With valid keys: a refresh during a running refresh gets the cached keys.
+        f.advance(60);
+        fetcher.open.store(false, Ordering::SeqCst);
+        let mut running = pin!(resolver.keys(&f.uri, Freshness::Refresh));
+        assert!(running.as_mut().poll(&mut cx).is_pending());
+        let mut other = pin!(resolver.keys(&f.uri, Freshness::Refresh));
+        assert!(matches!(other.as_mut().poll(&mut cx), Poll::Ready(Ok(_))));
+        assert_eq!(calls(), 3);
+        fetcher.open.store(true, Ordering::SeqCst);
+        assert!(matches!(running.as_mut().poll(&mut cx), Poll::Ready(Ok(_))));
+        // The finished fetch counts as the last attempt.
+        let mut soon = pin!(resolver.keys(&f.uri, Freshness::Refresh));
+        assert!(matches!(soon.as_mut().poll(&mut cx), Poll::Ready(Ok(_))));
+        assert_eq!(calls(), 3);
+    }
+
+    #[test]
+    fn a_dropped_fetch_does_not_block_refresh() {
+        let f = Fixture::new();
+        let fetcher = Arc::new(GateFetcher {
+            calls: AtomicUsize::new(0),
+            open: std::sync::atomic::AtomicBool::new(false),
+            body: f.fetcher.body.lock().unwrap().clone(),
+        });
+        let resolver = JwksResolver::new(Some(fetcher.clone()), f.clock.clone());
+        let mut cx = Context::from_waker(Waker::noop());
+        {
+            let mut first = pin!(resolver.keys(&f.uri, Freshness::Cached));
+            assert!(first.as_mut().poll(&mut cx).is_pending());
+        }
+        f.advance(60);
+        fetcher.open.store(true, Ordering::SeqCst);
+        let mut refresh = pin!(resolver.keys(&f.uri, Freshness::Refresh));
+        assert!(matches!(refresh.as_mut().poll(&mut cx), Poll::Ready(Ok(_))));
+        assert_eq!(fetcher.calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

@@ -262,8 +262,13 @@ use time::Duration;
 
 /// A fixture with `issuer` set and a [`StaticJwksFetcher`].
 pub fn assertion_fixture() -> (Fixture, StaticJwksFetcher) {
+    assertion_fixture_with_issuer(ISSUER)
+}
+
+/// [`assertion_fixture`] with another `issuer` value.
+pub fn assertion_fixture_with_issuer(issuer: &str) -> (Fixture, StaticJwksFetcher) {
     let fetcher = StaticJwksFetcher::new();
-    let config = config().with_issuer(ISSUER);
+    let config = config().with_issuer(issuer);
     let env = TestEnv::new(config).with_jwks_fetcher(Arc::new(fetcher.clone()));
     let deps = env.deps.clone();
     let fx = Fixture {
