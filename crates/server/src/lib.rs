@@ -5,6 +5,7 @@ pub mod cleanup;
 pub mod cli;
 pub mod config;
 pub mod ops;
+pub mod rotation;
 pub mod serve;
 pub mod telemetry;
 pub mod wiring;
@@ -12,8 +13,11 @@ pub mod wiring;
 use std::fmt::Display;
 
 use clap::Parser;
+use komainu::AesGcmKeySealer;
 use komainu::adapter_postgres::{PgUnitOfWorkFactory, connect};
+use komainu::adapter_std::OsSecureRandom;
 
+use crate::cli::key::KeyCommand;
 use crate::cli::{AdminCommand, Cli, Command};
 use crate::wiring::Settings;
 
@@ -71,6 +75,11 @@ pub fn run() -> i32 {
 
 async fn execute(cli: Cli) -> Result<(), Exit> {
     let Cli { config, command } = cli;
+    if matches!(command, Command::Key(KeyCommand::GenerateEncryptionKey)) {
+        let key = AesGcmKeySealer::generate_key_base64(&OsSecureRandom);
+        println!("{}", key.expose_secret_ref());
+        return Ok(());
+    }
     let mut config = config::load(config.as_deref()).map_err(Exit::usage)?;
     // `validate` may log a warning, so `serve` sets up logging first. The filter is checked
     // beforehand so that a bad `log.filter` is a configuration error (exit code 2).
@@ -92,16 +101,34 @@ async fn execute(cli: Cli) -> Result<(), Exit> {
         Command::Client(command) => admin(settings, AdminCommand::Client(command)).await,
         Command::User(command) => admin(settings, AdminCommand::User(command)).await,
         Command::Issuer(command) => admin(settings, AdminCommand::Issuer(command)).await,
+        Command::Key(command) => {
+            if settings.key_sealer.is_none() {
+                return Err(Exit::usage(
+                    "signing is disabled: set signing.encryption_key",
+                ));
+            }
+            let services = connect_services(settings).await?;
+            let service = services
+                .komainu
+                .signing_keys()
+                .expect("signing is enabled when a key sealer is set");
+            cli::key::run(service, command).await
+        }
     }
 }
 
-async fn admin(settings: Settings, command: AdminCommand) -> Result<(), Exit> {
+async fn connect_services(settings: Settings) -> Result<wiring::Services, Exit> {
     let pool = connect(&settings.pg).await.map_err(Exit::runtime)?;
-    let services = wiring::services(
+    wiring::services(
         PgUnitOfWorkFactory::new(pool),
         settings.application,
         settings.http,
+        settings.key_sealer,
     )
-    .map_err(Exit::runtime)?;
+    .map_err(Exit::runtime)
+}
+
+async fn admin(settings: Settings, command: AdminCommand) -> Result<(), Exit> {
+    let services = connect_services(settings).await?;
     cli::run_admin(services.komainu.admin(), command).await
 }

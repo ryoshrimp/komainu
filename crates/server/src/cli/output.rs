@@ -16,7 +16,7 @@ pub enum OutputFormat {
     Json,
 }
 
-fn rfc3339(at: OffsetDateTime) -> String {
+pub(super) fn rfc3339(at: OffsetDateTime) -> String {
     at.format(&Rfc3339).unwrap_or_default()
 }
 
@@ -175,7 +175,7 @@ impl<'a> SubjectMappingJson<'a> {
     }
 }
 
-fn to_json<T: Serialize>(value: &T) -> Result<String, Exit> {
+pub(super) fn to_json<T: Serialize>(value: &T) -> Result<String, Exit> {
     serde_json::to_string(value).map_err(Exit::runtime)
 }
 

@@ -2,6 +2,7 @@
 
 mod client;
 mod issuer;
+pub(crate) mod key;
 mod output;
 mod user;
 
@@ -42,6 +43,9 @@ pub enum Command {
     /// Manage trusted external assertion issuers.
     #[command(subcommand)]
     Issuer(issuer::IssuerCommand),
+    /// Manage the authorization server's signing keys.
+    #[command(subcommand)]
+    Key(key::KeyCommand),
 }
 
 /// An administration command, i.e. everything except `serve` and `migrate`.
