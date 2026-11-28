@@ -9,6 +9,7 @@ pub mod error;
 pub mod identity;
 pub mod issuer;
 pub mod shared;
+pub mod signing_key;
 pub mod token;
 
 pub use authorization::*;
@@ -19,4 +20,5 @@ pub use error::DomainError;
 pub use identity::*;
 pub use issuer::*;
 pub use shared::*;
+pub use signing_key::*;
 pub use token::*;
