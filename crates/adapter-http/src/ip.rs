@@ -40,11 +40,13 @@ fn is_global_v6(ip: Ipv6Addr) -> bool {
     if s[0] == 0x64 && s[1] == 0xff9b && s[2..6] == [0, 0, 0, 0] {
         return is_global_v4(embedded(ip));
     }
-    !(ip.is_unspecified()
-        || ip.is_loopback()
+    // ::/96 (IPv4-compatible, deprecated) also covers :: and ::1.
+    !(s[..6] == [0, 0, 0, 0, 0, 0]
+        || (s[0] == 0x64 && s[1] == 0xff9b && s[2] == 1)
         || (s[0] == 0x100 && s[1..4] == [0, 0, 0])
         || (s[0] == 0x2001 && s[1] < 0x200)
         || (s[0] == 0x2001 && s[1] == 0xdb8)
+        || s[0] == 0x2002
         || (s[0] & 0xfe00) == 0xfc00
         || (s[0] & 0xffc0) == 0xfe80
         || (s[0] & 0xff00) == 0xff00)
@@ -78,8 +80,11 @@ mod tests {
             ("240.0.0.0", "255.255.255.255"),
             ("::", "::"),
             ("::1", "::1"),
+            ("::", "::255.255.255.255"),
             ("::ffff:0:0", "::ffff:255.255.255.255"),
             ("64:ff9b::", "64:ff9b::255.255.255.255"),
+            ("64:ff9b:1::", "64:ff9b:1:ffff:ffff:ffff:ffff:ffff"),
+            ("2002::", "2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
             ("100::", "100::ffff:ffff:ffff:ffff"),
             ("2001::", "2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff"),
             ("2001:db8::", "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"),
@@ -119,6 +124,10 @@ mod tests {
             "fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
             "fe00::",
             "100:0:0:1::",
+            "::1:0:0",
+            "64:ff9b:2::",
+            "2001:4860::8888",
+            "2003::",
         ] {
             assert!(is_global(ip(s)), "{s}");
         }
