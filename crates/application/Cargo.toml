@@ -12,7 +12,8 @@ categories = ["authentication"]
 [dependencies]
 komainu-domain.workspace = true
 komainu-jose.workspace = true
-time.workspace = true
+time = { workspace = true, features = ["formatting"] }
+serde.workspace = true
 uuid.workspace = true
 base64.workspace = true
 thiserror.workspace = true

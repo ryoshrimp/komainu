@@ -17,6 +17,7 @@ pub mod deps;
 pub mod ids;
 pub mod maintenance;
 pub mod port;
+pub mod signing;
 mod support;
 pub mod token;
 
@@ -36,12 +37,16 @@ pub use authorization::{
     StartResult,
 };
 pub use capabilities::{ResponseMode, ResponseType, ServerCapabilities};
-pub use config::{ApplicationConfig, ScopeDefinition};
+pub use config::{ApplicationConfig, ApplicationConfigError, ScopeDefinition};
 pub use context::RequestContext;
 pub use deps::Dependencies;
 pub use ids::{new_opaque_token, new_uuid_v7};
 pub use maintenance::{MaintenanceService, PurgeReport};
 pub use port::*;
+pub use signing::{
+    RevokeOutcome, RotationReport, SigningConfig, SigningConfigError, SigningKeyError,
+    SigningKeyService, SigningKeySummary,
+};
 pub use token::{
     AccessTokenInfo, ClientAuthentication, RevocationError, RevocationRequest, TokenError,
     TokenRequest, TokenResponse, TokenService, TokenTypeHint,

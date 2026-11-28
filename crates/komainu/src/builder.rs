@@ -243,6 +243,7 @@ impl KomainuBuilder {
             clock,
             random,
             password_hasher,
+            signing_keys: None,
             authenticator,
             config: Arc::new(application_config),
         };

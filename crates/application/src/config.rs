@@ -1,6 +1,8 @@
 use komainu_domain::ScopeToken;
 use time::Duration;
 
+use crate::signing::SigningConfig;
+
 /// A scope the server knows, with its consent-screen description.
 #[derive(Debug, Clone)]
 pub struct ScopeDefinition {
@@ -33,6 +35,8 @@ pub struct ApplicationConfig {
     /// Assertions must have this value or `"{issuer}/token"` as `aud`. `None` disables
     /// `private_key_jwt` and jwt-bearer. Defaults to `None`.
     pub issuer: Option<String>,
+    /// Signing keys of the AS. `None` means the AS signs nothing. Defaults to `None`.
+    pub signing: Option<SigningConfig>,
 }
 
 impl ApplicationConfig {
@@ -112,6 +116,31 @@ impl ApplicationConfig {
         self.issuer = Some(value.into());
         self
     }
+
+    /// Sets `signing`.
+    #[must_use]
+    pub fn with_signing(mut self, value: SigningConfig) -> Self {
+        self.signing = Some(value);
+        self
+    }
+
+    /// Checks combinations of settings that cannot work together.
+    pub fn validate(&self) -> Result<(), ApplicationConfigError> {
+        if let Some(signing) = &self.signing
+            && signing.policy().retire_overlap() < self.access_token_ttl
+        {
+            return Err(ApplicationConfigError::RetireOverlapTooShort);
+        }
+        Ok(())
+    }
+}
+
+/// An invalid [`ApplicationConfig`].
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ApplicationConfigError {
+    /// `signing.retire_overlap` is shorter than `access_token_ttl`.
+    #[error("signing retire overlap must be at least the access token lifetime")]
+    RetireOverlapTooShort,
 }
 
 impl Default for ApplicationConfig {
@@ -128,6 +157,7 @@ impl Default for ApplicationConfig {
             purge_grace: Duration::hours(24),
             audit_retention: Duration::days(90),
             issuer: None,
+            signing: None,
         }
     }
 }

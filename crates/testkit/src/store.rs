@@ -1,6 +1,6 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use komainu_application::*;
@@ -33,6 +33,7 @@ pub struct InMemoryState {
 pub struct InMemoryUnitOfWorkFactory {
     committed: Arc<Mutex<InMemoryState>>,
     fail_next: Arc<AtomicBool>,
+    begin_count: Arc<AtomicUsize>,
 }
 
 impl InMemoryUnitOfWorkFactory {
@@ -48,6 +49,11 @@ impl InMemoryUnitOfWorkFactory {
     /// Committed state, for assertions.
     pub fn state(&self) -> InMemoryState {
         self.committed.lock().unwrap().clone()
+    }
+
+    /// How many times `begin()` has been called (`ping()` does not count).
+    pub fn begin_count(&self) -> usize {
+        self.begin_count.load(Ordering::SeqCst)
     }
 
     /// The next begin()/ping() returns StoreError::Unavailable.
@@ -66,6 +72,7 @@ impl InMemoryUnitOfWorkFactory {
 
 impl UnitOfWorkFactory for InMemoryUnitOfWorkFactory {
     fn begin(&self) -> BoxFuture<'_, Result<Box<dyn UnitOfWork>, StoreError>> {
+        self.begin_count.fetch_add(1, Ordering::SeqCst);
         let result = self.check_failure().map(|()| {
             Box::new(InMemoryUnitOfWork {
                 committed: Arc::clone(&self.committed),

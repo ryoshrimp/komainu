@@ -2191,6 +2191,7 @@ dependencies = [
  "komainu-domain",
  "komainu-jose",
  "komainu-testkit",
+ "serde",
  "thiserror",
  "time",
  "uuid",

@@ -6,6 +6,7 @@ use crate::port::{
     AssertionSubjectResolver, Clock, PasswordHasher, ResourceOwnerAuthenticator, SecureRandom,
     UnitOfWorkFactory,
 };
+use crate::signing::SigningKeyService;
 
 /// Everything a use-case service needs, wired by the caller.
 #[derive(Clone)]
@@ -19,4 +20,6 @@ pub struct Dependencies {
     /// Shared by every clone of `Dependencies`, so the `jwks_uri` cache is one.
     pub jwks: Arc<JwksResolver>,
     pub subject_resolver: Arc<dyn AssertionSubjectResolver>,
+    /// `None` when signing keys are not configured.
+    pub signing_keys: Option<Arc<SigningKeyService>>,
 }

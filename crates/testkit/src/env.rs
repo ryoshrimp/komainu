@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use komainu_application::{
     ApplicationConfig, AssertionSubjectResolver, BuiltinAuthenticator, Dependencies, JwksFetcher,
-    JwksResolver, MappingTableSubjectResolver,
+    JwksResolver, MappingTableSubjectResolver, SigningConfig, SigningKeyService,
 };
 use time::{Date, Month};
 
-use crate::{FixedClock, InMemoryUnitOfWorkFactory, PlainPasswordHasher, SequenceRandom};
+use crate::{
+    FixedClock, InMemoryUnitOfWorkFactory, PlainPasswordHasher, SequenceRandom, TestKeySealer,
+};
 
 /// Dependencies wired with the in-memory adapters, FixedClock at 2026-01-01T00:00:00Z,
 /// SequenceRandom, PlainPasswordHasher and BuiltinAuthenticator.
@@ -34,6 +36,7 @@ impl TestEnv {
             config: Arc::new(config),
             jwks: Arc::new(JwksResolver::new(None, Arc::new(clock.clone()))),
             subject_resolver: Arc::new(MappingTableSubjectResolver),
+            signing_keys: None,
         };
         Self { deps, store, clock }
     }
@@ -45,6 +48,20 @@ impl TestEnv {
             Some(fetcher),
             Arc::new(self.clock.clone()),
         ));
+        self
+    }
+
+    /// Enables signing keys: sets `config.signing` and wires a `SigningKeyService` that uses
+    /// [`TestKeySealer`] and this env's store, clock and random.
+    pub fn with_signing(mut self, config: SigningConfig) -> Self {
+        self.deps.config = Arc::new((*self.deps.config).clone().with_signing(config.clone()));
+        self.deps.signing_keys = Some(Arc::new(SigningKeyService::new(
+            self.deps.store.clone(),
+            Arc::new(TestKeySealer),
+            self.deps.clock.clone(),
+            self.deps.random.clone(),
+            config,
+        )));
         self
     }
 
