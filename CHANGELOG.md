@@ -40,7 +40,7 @@ a breaking change bumps the minor version.
   In the jwt-bearer grant, an omitted `scope` becomes the default scopes of the client; a client
   without default scopes must send `scope`.
 - An assertion may be valid for at most 300 seconds, is accepted once (its `jti` is remembered
-  until it expires, plus the clock skew), and must have the issuer URL or the token endpoint URL as `aud`; 60 seconds
+  until it expires, plus the clock skew, even when the request then fails), and must have the issuer URL or the token endpoint URL as `aud`; 60 seconds
   of clock skew are tolerated. The limit applies to the assertion only, not to the access token.
 - `komainu issuer` commands to manage trusted external issuers: `create`, `list`, `show`,
   `update`, `disable`, `enable`, `map-subject`, `unmap-subject` and `list-subjects`.

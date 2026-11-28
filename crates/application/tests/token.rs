@@ -686,6 +686,25 @@ fn private_key_jwt_authenticates_and_replay_is_rejected() {
 }
 
 #[test]
+fn a_failed_request_keeps_the_client_assertion_jti() {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let jwt = assertion(&fx, &key, &id, "jti-1");
+    let err = exchange(
+        &fx,
+        assertion_auth(Some(&id), jwt.clone()),
+        grant_request("client_credentials", Some("unknown-scope")),
+    )
+    .unwrap_err();
+    assert!(matches!(err, TokenError::InvalidScope));
+    // The jti was committed when the client was authenticated (D-3).
+    let err = token_with(&fx, assertion_auth(Some(&id), jwt)).unwrap_err();
+    assert!(matches!(err, TokenError::InvalidClient { .. }));
+    assert_eq!(failure_reasons(&fx), ["replay"]);
+}
+
+#[test]
 fn private_key_jwt_failures_are_audited_with_a_reason() {
     let (fx, fetcher) = assertion_fixture();
     let key = key_with_kid("k1");
@@ -1178,7 +1197,7 @@ mod jwt_bearer {
     }
 
     #[test]
-    fn a_rejected_assertion_rolls_back_the_client_assertion_jti() {
+    fn a_rejected_grant_keeps_the_client_assertion_jti() {
         let (fx, _) = assertion_fixture();
         let client_key = key_with_kid("c1");
         let idp_key = key_with_kid("idp-1");
@@ -1213,9 +1232,17 @@ mod jwt_bearer {
         let bad = assertion_with(&fx, &idp_key, IDP, "nobody", "g1", ISSUER, 60);
         let err = exchange(&fx, auth("same-client-jti"), request(bad)).unwrap_err();
         assert!(matches!(err, TokenError::InvalidGrant));
-        // The same client assertion succeeds on retry (its jti was rolled back).
+        // The client assertion stays used although the request failed (D-3).
         let ok = assertion_with(&fx, &idp_key, IDP, "u-1", "g2", ISSUER, 60);
-        exchange(&fx, auth("same-client-jti"), request(ok)).unwrap();
+        let err = exchange(&fx, auth("same-client-jti"), request(ok.clone())).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidClient { .. }));
+        assert_eq!(failure_reasons(&fx), ["replay"]);
+        // A scope error is found before the grant assertion's jti is recorded.
+        let mut bad_scope = request(ok.clone());
+        bad_scope.scope = Some("unknown-scope".to_owned());
+        let err = exchange(&fx, auth("client-jti-2"), bad_scope).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidScope));
+        exchange(&fx, auth("client-jti-3"), request(ok)).unwrap();
         assert_eq!(rejected(&fx).len(), 1);
     }
 

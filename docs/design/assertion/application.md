@@ -322,7 +322,10 @@ application はデータを持たない（キャッシュはメモリのみ）�
 | 4 | `ClientId::try_new(iss)` → `clients().find` → 存在・`is_active`・`auth_method() == PrivateKeyJwt` | 401 `invalid_client` | `unknown_client`（`try_new` 失敗も含む） / `client_disabled` / `method_not_allowed` |
 | 5 | 鍵: `Jwks` は `JwkSet::from_json`、`JwksUri` は `jwks.keys(uri, Freshness::Cached)` | 401 `invalid_client` | `invalid_jwks`（`KeyResolveError::InvalidJwks` も） / `key_fetch_failed`（`KeyResolveError::Fetch(_)` のすべての種類、fetcher なし、`Cached` での `RefetchTooSoon` を含む） |
 | 6 | `verify_assertion`（`Expected { issuer: iss, subject: Some(iss), audiences }`）。`JwksUri` で `KeyNotFound` なら `jwks.keys(uri, Freshness::Refresh)` で取り直して 1 回だけ再検証。`Refresh` が `RefetchTooSoon` なら再検証せず `key_not_found`、取り直しが失敗なら `key_fetch_failed`、再検証の失敗はその `reason()` | 401 `invalid_client` | `AssertionError::reason()` |
-| 7 | `used_assertions().record(ClientAuthentication, iss, jti, exp + ASSERTION_LEEWAY)` が `Replayed` | 401 `invalid_client` | `replay` |
+| 7 | 新しい uow で `used_assertions().record(ClientAuthentication, iss, jti, exp + ASSERTION_LEEWAY)` が `Replayed`。`Recorded` ならその uow を commit する（D-3） | 401 `invalid_client` | `replay` |
+| 8 | 要求の uow を開き、`clients().find` で読み直して手順 4 と同じ確認をする。`keys()` が手順 4 で読んだものと違えば拒否する | 401 `invalid_client` | 手順 4 と同じ / `client_changed` |
+
+手順 4 の読み出しは読み取り専用の uow で行い、手順 5 の前に捨てる。鍵の取得（手順 5、6）の間は DB のトランザクションを開かない（D-5）。そのため `authenticate_client` は uow を受け取らず、自分で開いた要求の uow を返す。
 
 body の `client_id` は省略してよい（RFC 7523 §3）。省略時はアサーションの `iss`（= `sub`）をクライアント ID として扱う。
 
@@ -335,7 +338,7 @@ body の `client_id` は省略してよい（RFC 7523 §3）。省略時はア�
 `revoke()` も `authenticate_client` を使うが、次の 2 点を変える（F-7）。
 
 - `authenticate_client` の結果の match（`crates/application/src/token/mod.rs`）に `Err(TokenError::InvalidRequest) => return Err(RevocationError::InvalidRequest)` を `Err(_)` の前に足す（手順 3 の `client_id` と `iss` の不一致）。`RevocationError::InvalidRequest` は既存（`token/error.rs`）で、http 側（`crates/http/src/oauth_error.rs`）も 400 `invalid_request` に写し済みなので、型と http の追加はない。今のままだと `Err(_)` に落ちて 500 になる。
-- 既存の `revoke` は、トークンをパースできない・見つからない・grant がすでに無効のとき commit せずに `Ok(())` を返す。`auth` が `ClientAuthentication::Assertion` のときは、この 3 か所でも `uow.commit()` してから `Ok(())` を返し、`jti` の記録を残す（D-3 の例外）。commit の失敗は `RevocationError::Server`。ほかの認証方式では既存どおり commit しない。理由: revoke は失敗しても 200 を返すので、記録が消えると同じアサーションを何度でも使える。
+- 既存の `revoke` は、トークンをパースできない・見つからない・grant がすでに無効のとき commit せずに `Ok(())` を返す。これは変えない。クライアント認証の `jti` は認証の時点で commit 済みなので（D-3）、早期 return でも記録は残る。
 
 ### jwt-bearer グラント（`TokenService::exchange`）
 
@@ -364,7 +367,7 @@ async fn finish_rejected(&self, ctx: &RequestContext, uow: Box<dyn UnitOfWork>, 
 
 - `exchange` の `match grant_type` に `GrantType::JwtBearer => self.jwt_bearer(ctx, uow.as_mut(), &client, &request).await?` を置き（今の `return Err(TokenError::UnsupportedGrantType)` を置き換える）、`match step` に `Step::Rejected { audit } => return Err(self.finish_rejected(ctx, uow, *audit).await)` を足す。
 - 下の表の失敗は `Ok(Step::Rejected { .. })` で返す。`InvalidRequest`（`assertion` なし）・`InvalidScope`・`Server` は既存どおり `Err` で返し、監査しない。
-- uow を drop するので、同じ要求で `authenticate_client` が記録したクライアント認証の `jti`（`private_key_jwt` のとき）もロールバックされる。D-3 の想定どおりで、同じクライアントアサーションは有効期限内に再送できる。
+- uow を drop しても、クライアント認証の `jti`（`private_key_jwt` のとき）は認証の時点で commit 済みなので残る（D-3）。同じクライアントアサーションの再送は `replay` になる。
 - `Step::Replay` の `finish_replay` は同じ uow で commit するが、`Rejected` は記録を残さないために uow を分ける。
 
 | 順 | 処理 | 失敗時の reason |
@@ -377,11 +380,11 @@ async fn finish_rejected(&self, ctx: &RequestContext, uow: Box<dyn UnitOfWork>, 
 | 6 | `users().find(user_id)` が Some かつ有効 | `user_disabled`（存在しないときも同じ） |
 | 7 | `used_assertions().record(AuthorizationGrant, iss, jti, exp + ASSERTION_LEEWAY)` が `Replayed` | `replay` |
 
-続けて `client.resolve_scope(request.scope)`（失敗は既存どおり `InvalidScope`、監査なし）→ `Grant::for_jwt_bearer(new grant id, client_id, Subject::from(user_id), scope, now)` → `issue_tokens(uow, client, grant, scope, refresh = false, now)`。監査 `token.issued` の details は既存の項目に `issuer` を加える。
+`client.resolve_scope(request.scope)`（失敗は既存どおり `InvalidScope`、監査なし）は表の手順 1 より前に行う。`jti` の記録（手順 7）の後はサーバーエラーでしか失敗しないようにするため（D-3）。表の後は `Grant::for_jwt_bearer(new grant id, client_id, Subject::from(user_id), scope, now)` → `issue_tokens(uow, client, grant, scope, refresh = false, now)`。監査 `token.issued` の details は既存の項目に `issuer` を加える。
 
 ### jti の記録とトランザクション
 
-`record` は要求の uow の中で行い、要求の成功時に commit される。後続の処理で失敗して uow を捨てると記録も消える（D-3）。例外は Assertion で認証した `revoke` で、早期 return でも commit する（§リボケーション）。
+クライアント認証の `record` は専用の uow で行い、その場で commit する。後続の処理で要求が失敗しても記録は残る。jwt-bearer のグラントアサーションの `record` は要求の uow の中で行うが、記録の後に失敗するのはサーバーエラーだけである（D-3）。
 
 ### AdminService
 
@@ -526,7 +529,8 @@ JWKS キャッシュ（`StaticJwksFetcher` は呼び出し回数を数える）:
 グラント:
 
 - F-10、F-11 の各ケース。成功時 `TokenResponse::refresh_token` は None、`verify_access_token` の `subject` は `Subject::from(user_id)`、grant の origin は `JwtBearer`。
-- `private_key_jwt` のクライアントが jwt-bearer で拒否された（例: `sub` の対応付けなし）あと、同じクライアントアサーションと正しいグラントアサーションで再送すると成功する（拒否時にクライアント認証の `jti` 記録もロールバックされる。D-3）。監査 `assertion.rejected` は 1 件残る。
+- `private_key_jwt` のクライアントが jwt-bearer で拒否された（例: `sub` の対応付けなし）あと、同じクライアントアサーションで再送すると `InvalidClient`（reason `replay`）。scope が不正な要求は `InvalidScope` になり、グラントアサーションの `jti` は記録されないので、同じグラントアサーションを新しいクライアントアサーションで送り直すと成功する。監査 `assertion.rejected` は 1 件残る。
+- `client_credentials` で scope が不正（`InvalidScope`）だった要求のクライアントアサーションを再送すると `InvalidClient`（reason `replay`）。
 - 対応付けたユーザーを `disable_user` で無効化すると、jwt-bearer で発行済みのグラントも既存の仕組みで失効する（`list_active_by_subject`）。
 - `AssertionSubjectResolver` を常に固定ユーザーを返すフェイクに差し替えると、対応表なしで成功する。
 

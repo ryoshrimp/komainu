@@ -67,7 +67,7 @@
 | N-1 | セキュリティ: SSRF | `jwks_uri` の接続先は DNS 解決後の全アドレスがグローバルユニキャストであること。DNS 応答のうち禁止アドレスは接続に使わない（再バインド対策）。プロキシ環境変数を使わず、リダイレクトに従わない | `crates/adapter-http/tests/fetch.rs` |
 | N-2 | セキュリティ: リプレイ | 同じ `(種別, 発行者, jti)` は記録が残っている間 2 回目を必ず拒否する。同時に 2 要求が来ても成功は 1 つだけ（DB の主キーで保証） | `crates/testkit` の conformance（PostgreSQL の同時実行テストを含む）、`crates/application/tests/token.rs` |
 | N-3 | セキュリティ: 秘匿 | `client_assertion` と `assertion` の値はログ・監査・`Debug` 出力に出さない | `TokenRequest` / `ClientAuthentication` の `Debug` のテスト |
-| N-4 | 性能 | JWKS 直接登録とキャッシュ命中時、アサーション検証は外部通信なし。`jwks_uri` の取得は 1 回最大 5 秒（DB トランザクションを開いたまま待つ。D-5） | テストのフェイク fetcher の呼び出し回数 |
+| N-4 | 性能 | JWKS 直接登録とキャッシュ命中時、アサーション検証は外部通信なし。`jwks_uri` の取得は 1 回最大 5 秒（DB トランザクションの外で待つ。D-5） | テストのフェイク fetcher の呼び出し回数 |
 | N-5 | 互換性 | 既存の `client_secret_basic` / `client_secret_post` / `none` と既存 3 グラントの振る舞い・既存テストを変えない。例外: facade（`komainu`）は `http` feature があると `ApplicationConfig::issuer` を `public_base_url` から自動で設定するため、既存の埋め込み利用者でもメタデータに `private_key_jwt` などの項目が増える（無効化する API は作らない） | 既存テストがそのまま通る |
 
 ### 2.5 前提と制約
@@ -150,9 +150,9 @@ sequenceDiagram
 |---|---|---|
 | D-1 | SAML（RFC 7522）は扱わない。共通検証は JWT 専用に作る | 要望がない。必要になれば別の設計書で扱う |
 | D-2 | 外部発行者の鍵は JWKS の直接登録だけ。`jwks_uri` は使わない | 発行者は運用者が登録するので鍵の更新も CLI で足りる。`JwksResolver` は発行者にも使える形にしておき、要望が出たら足す |
-| D-3 | 後続の処理で失敗した要求では `jti` の記録もロールバックされ、同じアサーションを有効期限内（最大 5 分）に再送できる。例外として、Assertion で認証した `revoke` は、トークンをパースできない・見つからない・grant がすでに無効で `Ok(())` を返す場合も常に commit し、`jti` の記録を残す | 失敗した要求ではトークンが出ていない。記録を別トランザクションで先に確定する方式は採らない。revoke は成功応答（200）を返すので、記録を残さないと同じアサーションを何度でも使える |
+| D-3 | クライアント認証の `jti` は、署名とクレームの検証が通った時点で専用のトランザクションで記録して commit する。後続の処理で要求が失敗しても記録は残り、同じアサーションの再送は 401（`replay`）。jwt-bearer のグラントアサーションの `jti` は要求の uow で記録するが、scope の解決を検証の前に済ませ、記録の後はサーバーエラーでしか失敗しないようにする | 当初は失敗した要求で記録をロールバックしていたが、それだと正規の要求が認証後に失敗したとき、盗まれたアサーションを別の grant_type で使える（2026-11-28 に変更）。RFC 7523 ではリクエストごとに新しいアサーションを作る前提なので、再送が 401 になる影響は小さい |
 | D-4 | `client update` で `client_secret_*` と `private_key_jwt` を相互に切り替えられない（`AdminError::Invalid`） | 鍵とシークレットの付け替えで中途半端な状態を作らない。新しいクライアントを登録してもらう |
-| D-5 | `jwks_uri` の取得（1 回最大 5 秒）は DB トランザクションを開いたまま待つ | キャッシュ命中時は通信せず、未知の `kid` による再取得も 60 秒に 1 回に抑えられる。接続プール枯渇が問題になれば、クライアント読み出しと鍵取得をトランザクションの外に出す |
+| D-5 | `jwks_uri` の取得（1 回最大 5 秒）は DB トランザクションの外で行う。クライアントは読み取り専用の uow で読んですぐ捨て、鍵の取得と検証の後、`jti` を記録する uow、要求の uow の順に開く。要求の uow でクライアントを読み直し、無効化・方式の変更・鍵の変更があれば拒否する | 取得を待つ間に DB の接続を持つと、遅い JWKS と同時の要求で接続プールが尽き、ほかの要求まで止まる（2026-11-28 に変更） |
 | D-6 | `jwks_uri` の取得に失敗したとき、期限切れのキャッシュは使わない（`invalid_client`） | 失効させた鍵を使い続けないよう、失敗時は閉じる側に倒す |
 
 ## 4. コンポーネント間の契約
@@ -252,7 +252,7 @@ PR はタスクごとに分ける。T6 で `private_key_jwt` が単独でリリ�
 
 - 依存: T4、T5
 - 対象: `crates/application/src/token/{mod.rs,request.rs}`、`crates/application/src/admin/{mod.rs,error.rs}`、`crates/application/src/audit.rs`、`crates/application/src/capabilities.rs`、`crates/http/src/{form.rs,client_auth.rs,metadata.rs}`、`crates/komainu/{Cargo.toml,src/builder.rs,src/lib.rs}`（`crates/server/Cargo.toml` は `komainu.workspace = true` で既定 feature を取り込むので、`jwks-uri` は自動で有効になり変更不要）、`RegisterClient` のリテラルに `keys` を足す `crates/komainu/examples/{minimal.rs,custom_screens.rs}`・`crates/komainu/tests/builder.rs`・`crates/application/tests/common/mod.rs`・`crates/http/tests/common/mod.rs`・`crates/adapter-postgres/tests/postgres.rs`、`crates/server/src/{wiring.rs,cli/client.rs,cli/output.rs,cli/mod.rs}`（`cli/mod.rs` は網羅 match の `admin_exit` に `AdminError::InvalidJwks` を足す）、テスト `crates/application/tests/{token.rs,revocation.rs,admin.rs,capabilities.rs}`、`crates/http/tests/{token.rs,revoke.rs,metadata.rs}`、`crates/server/tests/cli.rs`
-- 内容: クライアント認証の `Assertion` 分岐、`revoke` の変更（Assertion 認証時は早期 return でも commit する。D-3 の例外。match に `TokenError::InvalidRequest => RevocationError::InvalidRequest` を足す）、`AdminError::InvalidJwks`、クライアント登録・更新の鍵（`register_client` のシークレット生成を `ClientSecretBasic` / `ClientSecretPost` のときだけにする）、
+- 内容: クライアント認証の `Assertion` 分岐、`revoke` の変更（match に `TokenError::InvalidRequest => RevocationError::InvalidRequest` を足す）、`AdminError::InvalidJwks`、クライアント登録・更新の鍵（`register_client` のシークレット生成を `ClientSecretBasic` / `ClientSecretPost` のときだけにする）、
 メタデータの `private_key_jwt` と署名 alg（`grant_types` に `JwtBearer` はまだ入れない）、facade と server の配線、`client create/update` の CLI。F-1〜F-7、F-12 の `private_key_jwt` 部分、N-3、N-5
 - 完了条件: F-1〜F-7 の受け入れ条件がテストで確かめられる。既存テストが通る
 - 検証: `cargo test --workspace --features pg-tests`、`cargo clippy --workspace --all-targets --features pg-tests -- -D warnings`（`.github/workflows/ci.yml` と同じ。`pg-tests` は `komainu-adapter-postgres` と `komainu-server` にある）
