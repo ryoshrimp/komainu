@@ -1,7 +1,7 @@
 # JWT アサーション（RFC 7521 / 7523）設計書
 
-- 状態: 実装中（T1・T2 は実装済み）
-- 最終更新: 2026-11-27
+- 状態: 実装済み
+- 最終更新: 2026-11-28
 - 関連: [#19](https://github.com/ryoshrimp/komainu/issues/19)、[authorization-server 設計書](../authorization-server/README.md)（ロードマップ 3）、[authorization-server-metadata 設計書](../authorization-server-metadata/README.md)、[jose 設計書](../jose/README.md)、[RFC 7521](https://www.rfc-editor.org/rfc/rfc7521)、[RFC 7523](https://www.rfc-editor.org/rfc/rfc7523)
 
 ## 1. 概要

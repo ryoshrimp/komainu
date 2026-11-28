@@ -12,13 +12,26 @@ Grants and endpoints:
 
 - Authorization endpoint (`GET`/`POST /authorize`, `response_type=code` only) with a login page,
   a consent page and logout
-- Token endpoint (`POST /token`) with the `authorization_code`, `client_credentials` and
-  `refresh_token` grants
+- Token endpoint (`POST /token`) with the `authorization_code`, `client_credentials`,
+  `refresh_token` and `urn:ietf:params:oauth:grant-type:jwt-bearer` grants
 - Token revocation endpoint (`POST /revoke`, RFC 7009). Revoking either token revokes the whole
   grant
-- Authorization server metadata (`GET /.well-known/oauth-authorization-server`, RFC 8414)
+- Authorization server metadata (`GET /.well-known/oauth-authorization-server`, RFC 8414), which
+  also advertises `private_key_jwt`, the jwt-bearer grant and the signing algorithms
 - Client authentication with `client_secret_basic` (always) and `client_secret_post`
   (per client); public clients are off by default (`clients.allow_public`)
+- Client authentication with `private_key_jwt`
+  ([RFC 7523](https://www.rfc-editor.org/rfc/rfc7523) §2.2): the client signs a JWT assertion
+  (RS256 or ES256) with its private key, and komainu verifies it with the public keys registered
+  for the client, either as an inline JWK Set (`--jwks-file`) or as a `jwks_uri` that komainu
+  fetches and caches (`--jwks-uri`). Used on `/token` and `/revoke`
+- JWT bearer authorization grant ([RFC 7523](https://www.rfc-editor.org/rfc/rfc7523) §2.1,
+  [RFC 7521](https://www.rfc-editor.org/rfc/rfc7521)): a client exchanges an assertion signed by a
+  trusted external issuer (`komainu issuer`) for an access token. The assertion's `sub` is mapped
+  to a komainu user. No refresh token is issued, and only confidential clients can use it
+- An assertion is accepted once (`jti` replay protection), may be valid for at most 300 seconds
+  (60 seconds of clock skew is tolerated), and must name the issuer URL or the token endpoint
+  as `aud`. This limit is about the assertion only; access token lifetimes follow `[oauth]`
 - Refresh token rotation. Reusing a rotated refresh token revokes the whole token series
 - PKCE ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)), required for every client; only the
   `S256` method is supported
@@ -121,10 +134,21 @@ komainu migrate
 komainu client create --name NAME [--type confidential|public] [--auth-method M]
                       [--redirect-uri URI]... [--grant-type G]... [--scope "a b"]
                       [--default-scope "a"] [--skip-consent] [--output text|json]
+komainu client create --name NAME --auth-method private_key_jwt --grant-type client_credentials
+                      (--jwks-file PATH | --jwks-uri URL) [--scope "a b"]
 komainu client list | show | update | rotate-secret | disable | enable
+komainu issuer create --issuer ID --jwks-file PATH --client CLIENT_ID...
+komainu issuer list | show | update | disable | enable
+komainu issuer map-subject ID --subject SUB --username NAME
+komainu issuer unmap-subject ID --subject SUB
+komainu issuer list-subjects ID
 komainu user create USERNAME     # the password is the first line of standard input
 komainu user set-password | list | show | disable | enable
 ```
+
+`private_key_jwt` clients have no secret, so `client create` prints none and `rotate-secret`
+refuses them. A trusted issuer can be used only by the clients listed with `--client`, and such a client needs
+`--grant-type urn:ietf:params:oauth:grant-type:jwt-bearer`.
 
 Run `komainu --help` or `komainu client create --help` for all options. Exit codes: 0 success,
 1 runtime error, 2 usage or configuration error, 3 not found, 4 already exists. Disabling a client
@@ -158,7 +182,8 @@ The `komainu-testkit` crate has in-memory adapters and a conformance suite
 | `komainu-adapter-std` | clock, CSPRNG and Argon2 password hasher |
 | `komainu-http` | axum router and screens |
 | `komainu-server` | the `komainu` binary |
-| `komainu-jose` | JWS, JWK and JWT with RS256 and ES256 (not yet used by the other crates) |
+| `komainu-adapter-http` | `ReqwestJwksFetcher`, which fetches client `jwks_uri` documents |
+| `komainu-jose` | JWS, JWK and JWT with RS256 and ES256 |
 
 ## Development
 

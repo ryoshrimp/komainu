@@ -19,7 +19,7 @@ crates/server/src/
   telemetry.rs  // tracing subscriber, Prometheus recorder
   cleanup.rs    // periodic purge
   cli/
-    mod.rs  client.rs  user.rs  output.rs
+    mod.rs  client.rs  user.rs  issuer.rs  output.rs
 ```
 
 ### 終了コード
@@ -28,7 +28,7 @@ crates/server/src/
 |---|---|
 | 0 | 成功 |
 | 1 | 実行時のエラー（DB に接続できない、マイグレーションの失敗、強制停止など） |
-| 2 | 使い方・設定・入力値の誤り（clap のエラー、設定の検証エラー、`AdminError::Invalid` / `UnknownScope` / `PublicClientsDisabled`） |
+| 2 | 使い方・設定・入力値の誤り（clap のエラー、設定の検証エラー、`AdminError::Invalid` / `UnknownScope` / `PublicClientsDisabled` / `InvalidJwks` / `UnknownClient`、読めない `--jwks-file`） |
 | 3 | 対象が見つからない（`AdminError::NotFound`） |
 | 4 | 重複（`AdminError::Conflict`） |
 
@@ -121,22 +121,35 @@ komainu serve [--migrate]
 komainu migrate
 komainu client create --name NAME
     [--type confidential|public]                  # default confidential
-    [--auth-method client_secret_basic|client_secret_post|none]
+    [--auth-method client_secret_basic|client_secret_post|private_key_jwt|none]
                                                   # default: client_secret_basic (confidential), none (public)
     [--redirect-uri URI]...                       # repeatable
-    [--grant-type authorization_code|client_credentials|refresh_token]...
+    [--grant-type authorization_code|client_credentials|refresh_token|urn:ietf:params:oauth:grant-type:jwt-bearer]...
                                                   # repeatable; default authorization_code
     [--scope "a b"]                               # allowed_scopes; default empty
     [--default-scope "a"]                         # default_scopes; default empty
     [--skip-consent]
+    [--jwks-file PATH | --jwks-uri URL]           # private_key_jwt のときだけ必須、ほかでは指定不可
     [--output text|json]                          # default text
 komainu client list [--limit N] [--after CLIENT_ID] [--output text|json]   # limit default 100
 komainu client show CLIENT_ID [--output text|json]
 komainu client update CLIENT_ID [--name NAME] [--redirect-uri URI]... [--grant-type G]...
-    [--scope "a b"] [--default-scope "a"] [--skip-consent true|false] [--auth-method M] [--output text|json]
+    [--scope "a b"] [--default-scope "a"] [--skip-consent true|false] [--auth-method M]
+    [--jwks-file PATH | --jwks-uri URL] [--output text|json]
 komainu client rotate-secret CLIENT_ID [--output text|json]
 komainu client disable CLIENT_ID
 komainu client enable CLIENT_ID
+komainu issuer create --issuer ID --jwks-file PATH --client CLIENT_ID... [--output text|json]
+                                      # --client は 1 回以上（最大 100）
+komainu issuer list [--limit N] [--after ID] [--output text|json]          # limit default 100
+komainu issuer show ID [--output text|json]
+komainu issuer update ID [--jwks-file PATH] [--client CLIENT_ID]... [--output text|json]
+                                      # どちらか 1 つは必須。--client は許可するクライアントの一覧をまるごと置き換える
+komainu issuer disable ID
+komainu issuer enable ID
+komainu issuer map-subject ID --subject SUB --username NAME [--output text|json]   # 既存の対応は上書き
+komainu issuer unmap-subject ID --subject SUB
+komainu issuer list-subjects ID [--limit N] [--after SUB] [--output text|json]     # limit default 100
 komainu user create USERNAME          # password: first line of stdin
 komainu user set-password USERNAME    # password: first line of stdin
 komainu user list [--limit N] [--after USERNAME] [--output text|json]
@@ -146,6 +159,8 @@ komainu user enable USERNAME
 ```
 
 - `client update` で `--redirect-uri` や `--grant-type` を 1 つでも指定すると、その項目の一覧をまるごと置き換える。指定しない項目は変えない。
+- `private_key_jwt` のクライアントはシークレットを持たない。`create` は `client_secret` を出さず、`rotate-secret` は終了コード 2 になる。`update` で `private_key_jwt` とシークレット方式の間を切り替えることはできない（終了コード 2）。`--jwks-file` は JWK Set の JSON ファイルで、読めない、公開鍵でない、鍵が 1〜10 個でないときは終了コード 2。`--jwks-uri` は `https` の URL（登録時には取得せず、検証時に取得して最長 1 時間キャッシュする。キャッシュに無い `kid` は、前回取得から 60 秒以上経っていれば再取得する）。`show` の `text` には `keys: jwks (N keys)` か `keys: jwks_uri <URL>` の行が付く。
+- `issuer` は外部の発行者（jwt-bearer グラントで受け付けるアサーションの署名者）を管理する。`--client` は存在するクライアントでなければならない（なければ `UnknownClient`、終了コード 2）。`map-subject` の `--username` が存在しないユーザー、`ID` が存在しない発行者のときは終了コード 3。`issuer show` の `text` は `id`、`status`、`clients`、`keys`（鍵の数）、`created_at`、`updated_at`。`issuer list` の `text` は `<id>\t<status>`。
 - パスワードは標準入力の最初の 1 行（末尾の `\n` と `\r\n` を除く）。`NewPassword::try_new` に通らなければ（空、8 文字未満、129 文字以上）終了コード 2。
 - `--scope` と `--default-scope` は 1 回だけ指定でき、値はスペース区切りの文字列（`ScopeSet::parse`）。空文字（`--scope ""`）は空の集合を表す（`ScopeSet::empty()`。`parse` は呼ばない）。
 - `client update` で `redirect_uris` を空にするには `--clear-redirect-uris` を付ける（`--redirect-uri` と同時には指定できない。clap の `conflicts_with`）。`grant_types` は空にできない（不変条件 1）。
