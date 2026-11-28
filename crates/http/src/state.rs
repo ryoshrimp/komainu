@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use komainu_application::{AuthorizationService, TokenService};
+use komainu_application::{AuthorizationService, SigningKeyService, TokenService};
 
 use crate::csp::ContentSecurityPolicy;
 use crate::metadata::AuthorizationServerMetadata;
@@ -159,6 +159,7 @@ pub struct AppState {
     pub(crate) config: Arc<HttpConfig>,
     pub(crate) screens: Arc<dyn ScreenRenderer>,
     pub(crate) metadata: Arc<AuthorizationServerMetadata>,
+    pub(crate) signing_keys: Option<Arc<SigningKeyService>>,
 }
 
 impl AppState {
@@ -179,12 +180,24 @@ impl AppState {
             config: Arc::new(config),
             screens: Arc::new(DefaultScreens),
             metadata: Arc::new(metadata),
+            signing_keys: None,
         }
     }
 
     /// The metadata served at `/.well-known/oauth-authorization-server`.
     pub fn metadata(&self) -> &AuthorizationServerMetadata {
         &self.metadata
+    }
+
+    /// Passes the signing key service. `GET /jwks` then serves its keys and the metadata gets
+    /// a `jwks_uri` (`{public_base_url}/jwks`); the metadata is derived again.
+    #[must_use]
+    pub fn with_signing_keys(mut self, service: Arc<SigningKeyService>) -> Self {
+        let mut metadata = (*self.metadata).clone();
+        metadata.jwks_uri = Some(format!("{}/jwks", self.config.public_base_url()));
+        self.metadata = Arc::new(metadata);
+        self.signing_keys = Some(service);
+        self
     }
 
     /// Replaces the built-in screens with `screens`.

@@ -15,6 +15,26 @@
 //! The router is built for axum 0.8; add `axum = "0.8"` to your own dependencies to merge or
 //! nest it. komainu does not re-export axum.
 //!
+//! # Signing keys
+//!
+//! When `ApplicationConfig::signing` is set, give the builder a [`KeySealer`] with
+//! [`KomainuBuilder::key_sealer`]. The router then serves `GET /jwks` and the metadata has a
+//! `jwks_uri`. `build` creates no keys: call `rotate_due` at startup and periodically, for
+//! example every hour.
+//!
+//! ```no_run
+//! # async fn rotate(komainu: &komainu::Komainu) -> Result<(), Box<dyn std::error::Error>> {
+//! use komainu::application::RequestContext;
+//!
+//! if let Some(signing_keys) = komainu.signing_keys() {
+//!     let ctx = RequestContext { request_id: "rotation".to_owned(), client_ip: None };
+//!     let report = signing_keys.rotate_due(&ctx).await?;
+//! # let _ = report;
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! # Example
 //!
 //! ```no_run
@@ -56,5 +76,14 @@ pub use komainu_adapter_http as adapter_http;
 
 #[cfg(feature = "http")]
 pub use komainu_http as http;
+
+pub use komainu_application::{
+    ApplicationConfigError, KeySealer, RevokeOutcome, RotationReport, SealError, SigningConfig,
+    SigningConfigError, SigningKeyError, SigningKeyService, SigningKeySummary,
+};
+pub use komainu_domain::{SigningAlgorithm, SigningPolicy};
+
+#[cfg(feature = "std")]
+pub use komainu_adapter_std::AesGcmKeySealer;
 
 pub use builder::{BuildError, Komainu, KomainuBuilder};

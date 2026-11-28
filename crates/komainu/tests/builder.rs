@@ -410,3 +410,74 @@ mod flow {
         assert!(text.contains("\"RS256\""), "{text}");
     }
 }
+
+mod signing {
+    use std::sync::Arc;
+
+    use komainu::application::ApplicationConfig;
+    use komainu::domain::GrantType;
+    use komainu::{
+        BuildError, Komainu, KomainuBuilder, SigningAlgorithm, SigningConfig, SigningPolicy,
+    };
+    use komainu_testkit::{InMemoryUnitOfWorkFactory, TestKeySealer};
+
+    fn builder() -> KomainuBuilder {
+        let builder = Komainu::builder().store(InMemoryUnitOfWorkFactory::new());
+        #[cfg(not(feature = "std"))]
+        let builder = super::no_std_parts(builder);
+        #[cfg(feature = "http")]
+        let builder = builder
+            .http_config(komainu::http::HttpConfig::new("https://auth.example.com").unwrap());
+        builder
+    }
+
+    fn signing() -> ApplicationConfig {
+        ApplicationConfig::default().with_signing(
+            SigningConfig::new(vec![SigningAlgorithm::Es256], SigningPolicy::default()).unwrap(),
+        )
+    }
+
+    #[test]
+    fn signing_without_a_sealer_is_reported() {
+        let error = builder()
+            .application_config(signing())
+            .build()
+            .err()
+            .unwrap();
+        assert!(matches!(error, BuildError::MissingKeySealer));
+    }
+
+    #[test]
+    fn invalid_config_is_reported() {
+        let config = ApplicationConfig::default()
+            .with_disabled_grant_types([GrantType::AuthorizationCode].into());
+        let error = builder().application_config(config).build().err().unwrap();
+        assert!(matches!(error, BuildError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn signing_with_a_sealer_exposes_the_service() {
+        let komainu = builder()
+            .application_config(signing())
+            .key_sealer(Arc::new(TestKeySealer))
+            .build()
+            .unwrap();
+        assert!(komainu.signing_keys().is_some());
+        #[cfg(feature = "http")]
+        assert_eq!(
+            komainu.metadata().jwks_uri.as_deref(),
+            Some("https://auth.example.com/jwks")
+        );
+    }
+
+    #[test]
+    fn without_signing_a_sealer_is_ignored() {
+        let komainu = builder()
+            .key_sealer(Arc::new(TestKeySealer))
+            .build()
+            .unwrap();
+        assert!(komainu.signing_keys().is_none());
+        #[cfg(feature = "http")]
+        assert!(komainu.metadata().jwks_uri.is_none());
+    }
+}

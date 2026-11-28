@@ -10,6 +10,7 @@ mod consent;
 mod cookies;
 mod csp;
 mod form;
+mod jwks;
 mod login;
 mod metadata;
 mod metrics;
@@ -52,6 +53,7 @@ pub fn router(state: AppState) -> Router {
         .route("/logout", post(login::logout))
         .route("/token", post(token::token))
         .route("/revoke", post(revoke::revoke))
+        .route("/jwks", get(jwks::serve))
         .route(
             "/.well-known/oauth-authorization-server",
             get(metadata::serve),

@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use komainu_application::{
-    AdminService, ApplicationConfig, AssertionSubjectResolver, AuthorizationService,
-    BuiltinAuthenticator, Clock, Dependencies, JwksFetcher, JwksResolver, MaintenanceService,
-    MappingTableSubjectResolver, PasswordHasher, ResourceOwnerAuthenticator, SecureRandom,
-    TokenService, UnitOfWorkFactory,
+    AdminService, ApplicationConfig, ApplicationConfigError, AssertionSubjectResolver,
+    AuthorizationService, BuiltinAuthenticator, Clock, Dependencies, JwksFetcher, JwksResolver,
+    KeySealer, MaintenanceService, MappingTableSubjectResolver, PasswordHasher,
+    ResourceOwnerAuthenticator, SecureRandom, SigningKeyService, TokenService, UnitOfWorkFactory,
 };
 #[cfg(feature = "http")]
 use komainu_http::{AppState, HttpConfig, ScreenRenderer};
@@ -20,6 +20,7 @@ pub struct Komainu {
     token: TokenService,
     admin: AdminService,
     maintenance: MaintenanceService,
+    signing_keys: Option<Arc<SigningKeyService>>,
     #[cfg(feature = "http")]
     state: AppState,
 }
@@ -48,6 +49,12 @@ impl Komainu {
     /// Readiness checks and the purge of expired data.
     pub fn maintenance(&self) -> &MaintenanceService {
         &self.maintenance
+    }
+
+    /// The signing key service, when `ApplicationConfig::signing` is set. Call its
+    /// `rotate_due` at startup and periodically to create and retire keys.
+    pub fn signing_keys(&self) -> Option<&Arc<SigningKeyService>> {
+        self.signing_keys.as_ref()
     }
 
     /// The router with the authorization server endpoints. Every call returns a new router
@@ -87,6 +94,7 @@ pub struct KomainuBuilder {
     authenticator: Option<Arc<dyn ResourceOwnerAuthenticator>>,
     jwks_fetcher: Option<Arc<dyn JwksFetcher>>,
     subject_resolver: Option<Arc<dyn AssertionSubjectResolver>>,
+    key_sealer: Option<Arc<dyn KeySealer>>,
     #[cfg(feature = "http")]
     http_config: Option<HttpConfig>,
     #[cfg(feature = "http")]
@@ -152,6 +160,13 @@ impl KomainuBuilder {
         self
     }
 
+    /// Encrypts the signing keys at rest. Required when `ApplicationConfig::signing` is set;
+    /// ignored otherwise.
+    pub fn key_sealer(mut self, sealer: Arc<dyn KeySealer>) -> Self {
+        self.key_sealer = Some(sealer);
+        self
+    }
+
     /// The HTTP settings. Required with `http`.
     ///
     /// The `csrf_cookie_ttl` of `config` is replaced by
@@ -175,12 +190,15 @@ impl KomainuBuilder {
     ///
     /// # Errors
     ///
-    /// Returns a [`BuildError`] when a required part is missing or the password hasher
-    /// cannot be created.
+    /// Returns a [`BuildError`] when the application configuration is invalid, a required
+    /// part is missing or the password hasher cannot be created.
     pub fn build(self) -> Result<Komainu, BuildError> {
-        let store = self.store.ok_or(BuildError::MissingStore)?;
         #[cfg_attr(not(feature = "http"), expect(unused_mut))]
         let mut application_config = self.application_config.unwrap_or_default();
+        application_config
+            .validate()
+            .map_err(BuildError::InvalidConfig)?;
+        let store = self.store.ok_or(BuildError::MissingStore)?;
 
         #[cfg(not(feature = "std"))]
         let (clock, random, password_hasher) = (
@@ -234,6 +252,20 @@ impl KomainuBuilder {
             }
         };
 
+        let signing_keys = match &application_config.signing {
+            Some(signing) => {
+                let sealer = self.key_sealer.ok_or(BuildError::MissingKeySealer)?;
+                Some(Arc::new(SigningKeyService::new(
+                    store.clone(),
+                    sealer,
+                    clock.clone(),
+                    random.clone(),
+                    signing.clone(),
+                )))
+            }
+            None => None,
+        };
+
         let deps = Dependencies {
             store,
             jwks: Arc::new(JwksResolver::new(jwks_fetcher, clock.clone())),
@@ -243,7 +275,7 @@ impl KomainuBuilder {
             clock,
             random,
             password_hasher,
-            signing_keys: None,
+            signing_keys: signing_keys.clone(),
             authenticator,
             config: Arc::new(application_config),
         };
@@ -253,6 +285,10 @@ impl KomainuBuilder {
         #[cfg(feature = "http")]
         let state = {
             let state = AppState::new(authorization.clone(), token.clone(), http_config);
+            let state = match &signing_keys {
+                Some(service) => state.with_signing_keys(service.clone()),
+                None => state,
+            };
             match self.screens {
                 Some(screens) => state.with_screens(screens),
                 None => state,
@@ -264,6 +300,7 @@ impl KomainuBuilder {
             token,
             admin: AdminService::new(deps.clone()),
             maintenance: MaintenanceService::new(deps),
+            signing_keys,
             #[cfg(feature = "http")]
             state,
         })
@@ -283,6 +320,12 @@ pub enum BuildError {
     /// With the `http` feature, the HTTP settings are required.
     #[error("an HTTP configuration is required; call KomainuBuilder::http_config")]
     MissingHttpConfig,
+    /// `ApplicationConfig::signing` is set but no key sealer was given.
+    #[error("a key sealer is required when signing is enabled; call KomainuBuilder::key_sealer")]
+    MissingKeySealer,
+    /// `ApplicationConfig::validate` failed.
+    #[error("invalid application configuration: {0}")]
+    InvalidConfig(#[source] ApplicationConfigError),
     /// The Argon2 hasher could not be initialized.
     #[error("failed to initialize the password hasher: {0}")]
     PasswordHasher(#[source] Box<dyn std::error::Error + Send + Sync>),
