@@ -356,6 +356,9 @@ fn validate_extension_points(oauth: &OauthConfig) -> Result<(), ConfigError> {
 }
 
 /// Never puts `signing.encryption_key` into a message.
+/// Upper bound for the `signing.*_days` settings, so date arithmetic cannot overflow.
+const MAX_SIGNING_DAYS: u64 = 36_500;
+
 fn validate_signing(signing: &SigningSection) -> Result<(), ConfigError> {
     if signing.enabled()
         && AesGcmKeySealer::from_base64(&signing.encryption_key, Arc::new(OsSecureRandom)).is_err()
@@ -377,6 +380,17 @@ fn validate_signing(signing: &SigningSection) -> Result<(), ConfigError> {
     ] {
         if value == 0 {
             return Err(invalid(format!("{name} must be 1 or greater")));
+        }
+    }
+    for (name, value) in [
+        ("signing.active_days", signing.active_days),
+        ("signing.prepublish_days", signing.prepublish_days),
+        ("signing.retire_overlap_days", signing.retire_overlap_days),
+    ] {
+        if value > MAX_SIGNING_DAYS {
+            return Err(invalid(format!(
+                "{name} must be {MAX_SIGNING_DAYS} or less"
+            )));
         }
     }
     if signing.prepublish_days >= signing.active_days {
@@ -607,6 +621,8 @@ mod tests {
                 "prepublish_days = 90",
                 "rotation_interval_secs = 59",
                 "rotation_interval_secs = 604800",
+                "active_days = 36501",
+                "retire_overlap_days = 100000000000000000",
             ];
             for line in bad {
                 let error = with_extra(jail, "[signing]", line)

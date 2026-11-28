@@ -315,9 +315,10 @@ impl SigningKeyService {
 
     async fn load(&self) -> Result<Arc<Cached>, SigningKeyError> {
         let now = self.clock.now();
-        if let Some(cached) = self.cache.fresh(now) {
-            return Ok(cached);
-        }
+        let generation = match self.cache.fresh(now) {
+            Ok(cached) => return Ok(cached),
+            Err(generation) => generation,
+        };
         let keys = {
             let mut uow = self.store.begin().await?;
             uow.signing_keys().list().await?
@@ -343,7 +344,7 @@ impl SigningKeyService {
             signers,
             jwks,
         });
-        self.cache.store(cached.clone());
+        self.cache.store(cached.clone(), generation);
         Ok(cached)
     }
 

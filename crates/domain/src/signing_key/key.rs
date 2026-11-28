@@ -211,10 +211,14 @@ impl ServerSigningKey {
     /// `deletes_at = min(deletes_at, updated retires_at + overlap)`.
     /// A Pending key is covered too; its `activates_at` is moved to `now` to keep the
     /// time order. Does nothing (returns `false`) for Retired / Expired keys.
+    ///
+    /// The times written are never earlier than `created_at`, so a key created on a node
+    /// whose clock runs ahead keeps `created_at <= activates_at`.
     pub fn retire(&mut self, now: OffsetDateTime, overlap: Duration) -> bool {
         match self.status_at(now) {
             KeyStatus::Retired | KeyStatus::Expired => false,
             status => {
+                let now = now.max(self.record.created_at);
                 if status == KeyStatus::Pending {
                     self.record.activates_at = now;
                 }
@@ -227,11 +231,13 @@ impl ServerSigningKey {
     }
 
     /// Activates a Pending key now. Does nothing (returns `false`) otherwise.
+    ///
+    /// `activates_at` is never set earlier than `created_at` (see [`Self::retire`]).
     pub fn activate_now(&mut self, now: OffsetDateTime) -> bool {
         if self.status_at(now) != KeyStatus::Pending {
             return false;
         }
-        self.record.activates_at = now;
+        self.record.activates_at = now.max(self.record.created_at);
         true
     }
 }
@@ -405,5 +411,23 @@ pub(super) mod tests {
 
         let mut e = key("e", E, 1, 2, 3);
         assert!(!e.retire(t(10), o));
+    }
+
+    #[test]
+    fn times_never_go_before_created_at() {
+        let o = Duration::seconds(7);
+        // Created by a node whose clock is 5 s ahead of the caller's.
+        let mut a = key("a", E, 10, 20, 30);
+        a.record.created_at = t(5);
+        assert!(a.activate_now(t(3)));
+        assert_eq!(a.activates_at(), t(5));
+
+        let mut p = key("p", E, 10, 20, 30);
+        p.record.created_at = t(5);
+        assert!(p.retire(t(3), o));
+        assert_eq!(
+            (p.activates_at(), p.retires_at(), p.deletes_at()),
+            (t(5), t(5), t(12))
+        );
     }
 }
