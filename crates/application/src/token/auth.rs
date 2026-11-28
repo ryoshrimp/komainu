@@ -50,15 +50,19 @@ pub(crate) struct AuthMethodRegistry {
 
 impl AuthMethodRegistry {
     /// Registers every built-in method in the order client_secret_basic,
-    /// client_secret_post, private_key_jwt, none.
-    pub(crate) fn builtin(_config: &ApplicationConfig) -> Self {
+    /// client_secret_post, private_key_jwt, none, except `config.disabled_auth_methods`.
+    pub(crate) fn builtin(config: &ApplicationConfig) -> Self {
+        let methods: Vec<Box<dyn ClientAuthMethod>> = vec![
+            Box::new(ClientSecretBasic),
+            Box::new(ClientSecretPost),
+            Box::new(PrivateKeyJwt),
+            Box::new(PublicNone),
+        ];
         Self {
-            methods: vec![
-                Box::new(ClientSecretBasic),
-                Box::new(ClientSecretPost),
-                Box::new(PrivateKeyJwt),
-                Box::new(PublicNone),
-            ],
+            methods: methods
+                .into_iter()
+                .filter(|m| !config.disabled_auth_methods.contains(&m.method()))
+                .collect(),
         }
     }
 
@@ -92,7 +96,10 @@ impl AuthMethodRegistry {
     }
 
     /// Whether registered (not disabled). Ignores `is_available`.
-    #[allow(dead_code, reason = "used once auth methods can be disabled")]
+    #[allow(
+        dead_code,
+        reason = "only the tests use it; authentication goes through `find`"
+    )]
     pub(crate) fn is_registered(&self, method: TokenEndpointAuthMethod) -> bool {
         self.find(method).is_some()
     }

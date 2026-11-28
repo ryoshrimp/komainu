@@ -934,7 +934,10 @@ impl TokenService {
         .map_err(domain_failure)?;
         uow.access_tokens().insert(&record).await?;
         let mut refresh_token = None;
-        if refresh && client.supports_grant(GrantType::RefreshToken) {
+        if refresh
+            && client.supports_grant(GrantType::RefreshToken)
+            && self.grants.is_registered(GrantType::RefreshToken)
+        {
             let token = new_opaque_token(deps.random.as_ref());
             let record =
                 RefreshToken::issue(token.hash(), grant, now, deps.config.refresh_token_ttl)

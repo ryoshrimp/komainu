@@ -67,6 +67,8 @@ fn admin_exit(error: AdminError) -> Exit {
         AdminError::Invalid(error) => Exit::usage(error),
         error @ (AdminError::UnknownScope(_)
         | AdminError::PublicClientsDisabled
+        | AdminError::AuthMethodDisabled(_)
+        | AdminError::GrantTypeDisabled(_)
         | AdminError::InvalidJwks(_)
         | AdminError::UnknownClient(_)) => Exit::usage(error),
         AdminError::NotFound => Exit::new(3, "not found"),

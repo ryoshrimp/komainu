@@ -31,15 +31,19 @@ pub(crate) struct GrantRegistry {
 
 impl GrantRegistry {
     /// Registers every built-in handler in the order authorization_code,
-    /// client_credentials, refresh_token, jwt-bearer.
-    pub(crate) fn builtin(_config: &ApplicationConfig) -> Self {
+    /// client_credentials, refresh_token, jwt-bearer, except `config.disabled_grant_types`.
+    pub(crate) fn builtin(config: &ApplicationConfig) -> Self {
+        let handlers: Vec<Box<dyn GrantHandler>> = vec![
+            Box::new(AuthorizationCodeGrant),
+            Box::new(ClientCredentialsGrant),
+            Box::new(RefreshTokenGrant),
+            Box::new(JwtBearerGrant),
+        ];
         Self {
-            handlers: vec![
-                Box::new(AuthorizationCodeGrant),
-                Box::new(ClientCredentialsGrant),
-                Box::new(RefreshTokenGrant),
-                Box::new(JwtBearerGrant),
-            ],
+            handlers: handlers
+                .into_iter()
+                .filter(|h| !config.disabled_grant_types.contains(&h.grant_type()))
+                .collect(),
         }
     }
 
@@ -65,7 +69,6 @@ impl GrantRegistry {
     }
 
     /// Whether registered (not disabled). Ignores `is_available`.
-    #[allow(dead_code, reason = "used once grant types can be disabled")]
     pub(crate) fn is_registered(&self, grant_type: GrantType) -> bool {
         self.handlers.iter().any(|h| h.grant_type() == grant_type)
     }

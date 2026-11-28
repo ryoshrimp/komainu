@@ -381,3 +381,66 @@ async fn malformed_requests_are_invalid_request() {
     assert_error(&secret_only, bad, "invalid_request");
     assert!(alive(&h, &token).await);
 }
+
+/// A harness over the same store, with the given authentication methods disabled.
+fn disabling(
+    enabled: &Harness,
+    methods: impl IntoIterator<Item = TokenEndpointAuthMethod>,
+) -> Harness {
+    let mut deps = enabled.env.deps.clone();
+    deps.config =
+        std::sync::Arc::new(app_config().with_disabled_auth_methods(methods.into_iter().collect()));
+    let env = komainu_testkit::TestEnv {
+        deps,
+        store: enabled.env.store.clone(),
+        clock: enabled.env.clock.clone(),
+    };
+    let config = HttpConfig::new(BASE).unwrap().with_cookie_secure(false);
+    Harness::from_config(env, config)
+}
+
+#[tokio::test]
+async fn a_disabled_auth_method_is_invalid_client() {
+    let enabled = Harness::new();
+    let c = cc_client(&enabled).await;
+    let token = issue(&enabled, &c).await;
+    let harness = disabling(&enabled, [TokenEndpointAuthMethod::ClientSecretBasic]);
+    let auth = basic(&c.id(), &c.secret());
+
+    let revoke = harness
+        .send(form("/revoke", Some(&auth), &format!("token={token}")))
+        .await;
+    assert_error(&revoke, StatusCode::UNAUTHORIZED, "invalid_client");
+    assert_eq!(
+        revoke.header("www-authenticate"),
+        Some(r#"Basic realm="komainu""#)
+    );
+    let reply = harness
+        .send(form("/token", Some(&auth), "grant_type=client_credentials"))
+        .await;
+    assert_error(&reply, StatusCode::UNAUTHORIZED, "invalid_client");
+    assert_eq!(
+        reply.header("www-authenticate"),
+        Some(r#"Basic realm="komainu""#)
+    );
+    assert!(alive(&enabled, &token).await);
+}
+
+#[tokio::test]
+async fn a_disabled_post_method_is_401_without_www_authenticate() {
+    let enabled = Harness::new();
+    let mut input = confidential(&[GrantType::ClientCredentials]);
+    input.redirect_uris.clear();
+    input.auth_method = TokenEndpointAuthMethod::ClientSecretPost;
+    let c = enabled.register(input).await;
+    let harness = disabling(&enabled, [TokenEndpointAuthMethod::ClientSecretPost]);
+    let reply = harness
+        .send(form(
+            "/revoke",
+            None,
+            &format!("token=t&client_id={}&client_secret={}", c.id(), c.secret()),
+        ))
+        .await;
+    assert_error(&reply, StatusCode::UNAUTHORIZED, "invalid_client");
+    assert_eq!(reply.header("www-authenticate"), None);
+}
