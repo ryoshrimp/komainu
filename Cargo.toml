@@ -55,6 +55,7 @@ rsa = { version = "0.10", default-features = false, features = ["std", "encoding
 p256 = "0.14"
 pkcs8 = { version = "0.11", features = ["pem", "std"] }
 zeroize = "1"
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "alloc"] }
 
 # Data types
 time = "0.3"
