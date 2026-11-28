@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/komainu-logo-cream.svg">
+    <img src="docs/assets/komainu-logo.svg" alt="komainu logo: a pair of guardian lion-dogs facing a keyhole" width="200">
+  </picture>
+</p>
+
 # komainu
 
 komainu is an OAuth 2.0 authorization server written in Rust. It implements the core of
