@@ -6,6 +6,7 @@ members = [
     "crates/application",
     "crates/adapter-postgres",
     "crates/adapter-std",
+    "crates/adapter-http",
     "crates/testkit",
     "crates/http",
     "crates/komainu",
@@ -21,10 +22,12 @@ repository = "https://github.com/ryoshrimp/komainu"
 
 [workspace.dependencies]
 # Internal crates
+komainu-jose = { path = "crates/jose", version = "0.1.0-alpha.3" }
 komainu-domain = { path = "crates/domain", version = "0.1.0-alpha.3" }
 komainu-application = { path = "crates/application", version = "0.1.0-alpha.3" }
 komainu-adapter-postgres = { path = "crates/adapter-postgres", version = "0.1.0-alpha.3" }
 komainu-adapter-std = { path = "crates/adapter-std", version = "0.1.0-alpha.3" }
+komainu-adapter-http = { path = "crates/adapter-http", version = "0.1.0-alpha.3" }
 komainu-testkit = { path = "crates/testkit", version = "0.1.0-alpha.3" }
 komainu-http = { path = "crates/http", version = "0.1.0-alpha.3" }
 komainu = { path = "crates/komainu", version = "0.1.0-alpha.3" }
@@ -72,13 +75,15 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 
+# HTTP client
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+
 # Errors
 thiserror = "2"
 anyhow = "1"
 
 # Test-only
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "cookies"] }
 assert_cmd = "2"
 proptest = "1"
 jsonwebtoken = { version = "12", default-features = false, features = ["rust_crypto", "use_pem"] }

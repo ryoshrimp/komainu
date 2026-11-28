@@ -185,7 +185,7 @@ pub struct SubjectMapping {
 
 ### Client::update
 
-- `auth_method` の変更は「`ClientSecretBasic` ↔ `ClientSecretPost`」だけ許す。それ以外の変更（`PrivateKeyJwt` との行き来）は `DomainError::invalid("auth_method", "cannot switch between secret and private_key_jwt")`（Q-4）。
+- `auth_method` の変更は「`ClientSecretBasic` ↔ `ClientSecretPost`」だけ許す。それ以外の変更（`PrivateKeyJwt` との行き来）は `DomainError::invalid("auth_method", "cannot switch between secret and private_key_jwt")`（D-4）。
 - `keys` を `Some` にできるのは `PrivateKeyJwt` のクライアントだけ。他は `DomainError::invalid("keys", ...)`。
 - 変更後に不変条件を検査する。成功すれば既存と同じ `Updated` イベント。
 

@@ -53,6 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 allowed_scopes: ScopeSet::parse("read")?,
                 default_scopes: ScopeSet::parse("read")?,
                 skip_consent: false,
+                keys: None,
             },
         )
         .await?;

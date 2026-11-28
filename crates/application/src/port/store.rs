@@ -32,6 +32,9 @@ pub trait UnitOfWork: Send {
     fn access_tokens(&mut self) -> &mut dyn AccessTokenRepository;
     fn refresh_tokens(&mut self) -> &mut dyn RefreshTokenRepository;
     fn audit_log(&mut self) -> &mut dyn AuditLogRepository;
+    fn trusted_issuers(&mut self) -> &mut dyn TrustedIssuerRepository;
+    fn subject_mappings(&mut self) -> &mut dyn SubjectMappingRepository;
+    fn used_assertions(&mut self) -> &mut dyn UsedAssertionRepository;
     fn purge(&mut self) -> &mut dyn PurgeRepository;
     fn commit(self: Box<Self>) -> BoxFuture<'static, Result<(), StoreError>>;
 }
@@ -52,4 +55,5 @@ pub struct PurgeCounts {
     pub refresh_tokens: u64,
     pub login_sessions: u64,
     pub grants: u64,
+    pub used_assertions: u64,
 }

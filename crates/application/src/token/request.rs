@@ -20,6 +20,12 @@ pub enum ClientAuthentication {
     },
     /// Only `client_id` in the body (public clients).
     PublicId { client_id: String },
+    /// `client_assertion_type` is the jwt-bearer URN and `client_assertion` is present.
+    /// `client_id` is the body's `client_id`, if any.
+    Assertion {
+        client_id: Option<String>,
+        assertion: Secret<String>,
+    },
     /// No credentials.
     None,
 }
@@ -33,6 +39,8 @@ pub struct TokenRequest {
     pub scope: Option<String>,
     pub refresh_token: Option<String>,
     pub code_verifier: Option<String>,
+    /// `assertion` of the jwt-bearer grant.
+    pub assertion: Option<String>,
     /// Names of the above parameters that appeared more than once.
     pub duplicated: Vec<&'static str>,
 }
@@ -48,6 +56,7 @@ impl TokenRequest {
                 scope,
                 refresh_token,
                 code_verifier,
+                assertion,
             ],
             duplicated,
         ) = collect_params(
@@ -59,6 +68,7 @@ impl TokenRequest {
                 "scope",
                 "refresh_token",
                 "code_verifier",
+                "assertion",
             ],
         );
         Self {
@@ -68,6 +78,7 @@ impl TokenRequest {
             scope,
             refresh_token,
             code_verifier,
+            assertion,
             duplicated,
         }
     }
@@ -94,6 +105,7 @@ impl fmt::Debug for TokenRequest {
             .field("scope", &self.scope)
             .field("refresh_token", &Redacted(&self.refresh_token))
             .field("code_verifier", &Redacted(&self.code_verifier))
+            .field("assertion", &Redacted(&self.assertion))
             .field("duplicated", &self.duplicated)
             .finish()
     }

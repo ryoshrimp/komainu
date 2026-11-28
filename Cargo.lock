@@ -2051,6 +2051,7 @@ version = "0.1.0-alpha.3"
 dependencies = [
  "axum",
  "http-body-util",
+ "komainu-adapter-http",
  "komainu-adapter-postgres",
  "komainu-adapter-std",
  "komainu-application",
@@ -2062,6 +2063,19 @@ dependencies = [
  "time",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "komainu-adapter-http"
+version = "0.1.0-alpha.3"
+dependencies = [
+ "axum",
+ "komainu-application",
+ "komainu-domain",
+ "reqwest",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2099,6 +2113,7 @@ version = "0.1.0-alpha.3"
 dependencies = [
  "base64 0.23.1",
  "komainu-domain",
+ "komainu-jose",
  "komainu-testkit",
  "thiserror",
  "time",
@@ -2130,6 +2145,7 @@ dependencies = [
  "http-body-util",
  "komainu-application",
  "komainu-domain",
+ "komainu-jose",
  "komainu-testkit",
  "metrics",
  "serde",
@@ -2175,6 +2191,7 @@ dependencies = [
  "clap",
  "figment",
  "komainu",
+ "komainu-jose",
  "komainu-testkit",
  "metrics",
  "metrics-exporter-prometheus",

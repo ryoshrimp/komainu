@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use komainu_domain::{
     AggregateRoot, AuthorizationCode, AuthorizationCodeEvent, AuthorizationRequest,
     AuthorizationRequestEvent, Client, ClientEvent, ClientId, Consent, ConsentEvent, Grant,
-    GrantEvent, RefreshToken, RefreshTokenEvent, RevocationReason, Subject, User, UserEvent,
+    GrantEvent, IssuerEvent, RefreshToken, RefreshTokenEvent, RevocationReason, Subject,
+    TrustedIssuer, User, UserEvent,
 };
 
 use crate::audit::{AuditActor, AuditEvent, AuditKind, AuditOutcome};
@@ -114,6 +115,29 @@ pub(crate) fn client_events(
                 out = out.detail("client_type", client_type);
             }
             out
+        })
+        .collect()
+}
+
+pub(crate) fn issuer_events(
+    deps: &Dependencies,
+    ctx: &RequestContext,
+    issuer: &mut TrustedIssuer,
+) -> Vec<AuditEvent> {
+    issuer
+        .pull_events()
+        .into_iter()
+        .map(|event| {
+            let (kind, id) = match &event {
+                IssuerEvent::Registered { issuer_id, .. } => {
+                    (AuditKind::IssuerRegistered, issuer_id)
+                }
+                IssuerEvent::Updated { issuer_id, .. } => (AuditKind::IssuerUpdated, issuer_id),
+                IssuerEvent::Disabled { issuer_id, .. } => (AuditKind::IssuerDisabled, issuer_id),
+                IssuerEvent::Enabled { issuer_id, .. } => (AuditKind::IssuerEnabled, issuer_id),
+            };
+            audit_event(deps, ctx, kind, AuditOutcome::Success, AuditActor::Admin)
+                .detail("issuer", id.as_inner())
         })
         .collect()
 }

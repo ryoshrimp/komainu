@@ -2,7 +2,7 @@ use axum::http::HeaderMap;
 use axum::http::header::AUTHORIZATION;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use komainu_application::{ClientAuthentication, TokenError};
+use komainu_application::{CLIENT_ASSERTION_TYPE_JWT_BEARER, ClientAuthentication, TokenError};
 use komainu_domain::Secret;
 
 /// Decodes `application/x-www-form-urlencoded` text strictly: a malformed `%` escape or
@@ -31,10 +31,12 @@ fn form_decode(input: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// `client_id` and `client_secret` from the body (empty values count as absent).
+/// Client credentials from the body (empty values count as absent).
 pub(crate) struct BodyCredentials {
     pub client_id: Option<String>,
     pub client_secret: Option<Secret<String>>,
+    pub client_assertion_type: Option<String>,
+    pub client_assertion: Option<Secret<String>>,
 }
 
 /// The credentials part of an `Authorization: Basic` header, if the scheme is `Basic`.
@@ -69,7 +71,27 @@ pub(crate) fn client_authentication(
     let BodyCredentials {
         client_id,
         client_secret,
+        client_assertion_type,
+        client_assertion,
     } = body;
+    match (client_assertion_type, client_assertion) {
+        (None, None) => {}
+        (Some(_), None) | (None, Some(_)) => return Err(TokenError::InvalidRequest),
+        (Some(kind), Some(assertion)) => {
+            if basic_value(headers).is_some() || client_secret.is_some() {
+                return Err(TokenError::InvalidRequest);
+            }
+            if kind != CLIENT_ASSERTION_TYPE_JWT_BEARER {
+                return Err(TokenError::InvalidClient {
+                    basic_attempted: false,
+                });
+            }
+            return Ok(ClientAuthentication::Assertion {
+                client_id,
+                assertion,
+            });
+        }
+    }
     match basic_value(headers) {
         Some(encoded) => {
             if client_secret.is_some() {
@@ -111,6 +133,8 @@ mod tests {
         BodyCredentials {
             client_id: None,
             client_secret: None,
+            client_assertion_type: None,
+            client_assertion: None,
         }
     }
 
@@ -147,5 +171,59 @@ mod tests {
                 Ok(ClientAuthentication::None)
             ));
         }
+    }
+
+    #[test]
+    fn assertion_branches() {
+        let assertion = |kind: Option<&str>, value: Option<&str>| BodyCredentials {
+            client_assertion_type: kind.map(str::to_owned),
+            client_assertion: value.map(|v| Secret::new(v.to_owned())),
+            ..none()
+        };
+        let jwt = CLIENT_ASSERTION_TYPE_JWT_BEARER;
+        // Only one of the pair.
+        assert!(matches!(
+            client_authentication(&HeaderMap::new(), assertion(Some(jwt), None)),
+            Err(TokenError::InvalidRequest)
+        ));
+        assert!(matches!(
+            client_authentication(&HeaderMap::new(), assertion(None, Some("a.b.c"))),
+            Err(TokenError::InvalidRequest)
+        ));
+        // Combined with Basic or client_secret.
+        assert!(matches!(
+            client_authentication(&auth(b"Basic eDp5"), assertion(Some(jwt), Some("a"))),
+            Err(TokenError::InvalidRequest)
+        ));
+        let mut with_secret = assertion(Some(jwt), Some("a"));
+        with_secret.client_secret = Some(Secret::new("s".to_owned()));
+        assert!(matches!(
+            client_authentication(&HeaderMap::new(), with_secret),
+            Err(TokenError::InvalidRequest)
+        ));
+        // Unknown type.
+        assert!(matches!(
+            client_authentication(&HeaderMap::new(), assertion(Some("urn:x"), Some("a"))),
+            Err(TokenError::InvalidClient {
+                basic_attempted: false
+            })
+        ));
+        // Accepted, with and without client_id.
+        let mut with_id = assertion(Some(jwt), Some("a"));
+        with_id.client_id = Some("c".to_owned());
+        assert!(matches!(
+            client_authentication(&HeaderMap::new(), with_id),
+            Ok(ClientAuthentication::Assertion {
+                client_id: Some(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            client_authentication(&HeaderMap::new(), assertion(Some(jwt), Some("a"))),
+            Ok(ClientAuthentication::Assertion {
+                client_id: None,
+                ..
+            })
+        ));
     }
 }

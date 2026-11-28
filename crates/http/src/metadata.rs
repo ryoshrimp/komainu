@@ -27,6 +27,10 @@ pub struct AuthorizationServerMetadata {
     pub grant_types_supported: Vec<&'static str>,
     pub token_endpoint_auth_methods_supported: Vec<&'static str>,
     pub revocation_endpoint_auth_methods_supported: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub token_endpoint_auth_signing_alg_values_supported: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub revocation_endpoint_auth_signing_alg_values_supported: Vec<&'static str>,
     pub code_challenge_methods_supported: Vec<&'static str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub scopes_supported: Vec<String>,
@@ -64,6 +68,16 @@ impl AuthorizationServerMetadata {
                 .collect(),
             revocation_endpoint_auth_methods_supported: capabilities
                 .revocation_endpoint_auth_methods
+                .iter()
+                .map(|v| v.as_str())
+                .collect(),
+            token_endpoint_auth_signing_alg_values_supported: capabilities
+                .token_endpoint_auth_signing_algs
+                .iter()
+                .map(|v| v.as_str())
+                .collect(),
+            revocation_endpoint_auth_signing_alg_values_supported: capabilities
+                .revocation_endpoint_auth_signing_algs
                 .iter()
                 .map(|v| v.as_str())
                 .collect(),

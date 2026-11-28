@@ -65,13 +65,16 @@ pub struct TokenRequest {
 
 `TokenRequest::from_pairs` は `"assertion"` を `collect_params` の名前の配列に加える。2 回以上出現すれば既存どおり `duplicated` に `"assertion"` が入り、`exchange` 冒頭の既存の判定（`duplicated` が空でなければ `InvalidRequest`）で 400 になる。`ClientAuthentication::Assertion` の `Debug` も手書きにし、`assertion` を `[REDACTED]` と出す（`Secret` の `Debug` が既に伏せるなら derive でよい）。`RevocationRequest` は変えない（クライアント認証は `ClientAuthentication` で渡る）。
 
+`TokenRequest` の手書き `Debug` は、`code_verifier` の後・`duplicated` の前に `assertion: None` / `assertion: Some([REDACTED])` と出す。`crates/application/tests/token.rs` の既存の期待文字列もこれに合わせて直す（T6）。
+
 ### ApplicationConfig（`crates/application/src/config.rs`）
 
 ```rust
 pub struct ApplicationConfig {
     // 既存フィールド
     /// サーバーの issuer 識別子（例 "https://as.example.com"、末尾 / なし）。
-    /// アサーションの aud として、この値と "{issuer}/token" を受け入れる。
+    /// アサーションの aud として、この値と "{issuer}/token" を受け入れる（/revoke では "{issuer}/revoke" も）。
+    /// 末尾の "/" は使うときに取り除く。
     /// None なら private_key_jwt と jwt-bearer は無効（広告もしない）。既定 None。
     pub issuer: Option<String>,
 }
@@ -94,7 +97,7 @@ pub struct Dependencies {
 
 ### port
 
-`crates/application/src/port/repository.rs` に追加（既存と同じく `&mut self` と `BoxFuture`）。
+`crates/application/src/port/repository.rs` に追加（既存と同じく `&mut self` と `BoxFuture`。`list` 系の `ListPage` は既存の `ClientRepository::list` に揃えて参照渡し）。3 つの Repository trait と `AssertionKind` / `UsedAssertion` / `RecordOutcome` はすべてこのファイルに置く。
 
 ```rust
 pub trait TrustedIssuerRepository: Send {
@@ -105,7 +108,7 @@ pub trait TrustedIssuerRepository: Send {
     fn insert(&mut self, issuer: &TrustedIssuer) -> BoxFuture<'_, Result<(), StoreError>>;
     fn update(&mut self, issuer: &TrustedIssuer) -> BoxFuture<'_, Result<(), StoreError>>;
     /// id の昇順。after より大きいものから limit 件。
-    fn list(&mut self, page: ListPage<IssuerId>) -> BoxFuture<'_, Result<Vec<TrustedIssuer>, StoreError>>;
+    fn list(&mut self, page: &ListPage<IssuerId>) -> BoxFuture<'_, Result<Vec<TrustedIssuer>, StoreError>>;
 }
 
 pub trait SubjectMappingRepository: Send {
@@ -116,7 +119,7 @@ pub trait SubjectMappingRepository: Send {
     /// 削除したら true、なければ false。
     fn delete(&mut self, issuer: &IssuerId, subject: &ExternalSubject) -> BoxFuture<'_, Result<bool, StoreError>>;
     /// subject の昇順。
-    fn list_by_issuer(&mut self, issuer: &IssuerId, page: ListPage<ExternalSubject>)
+    fn list_by_issuer(&mut self, issuer: &IssuerId, page: &ListPage<ExternalSubject>)
         -> BoxFuture<'_, Result<Vec<SubjectMapping>, StoreError>>;
 }
 
@@ -146,9 +149,14 @@ pub enum RecordOutcome { Recorded, Replayed }
 
 `crates/application/src/port/store.rs`:
 
-- 上の 3 つの Repository trait と `AssertionKind` / `UsedAssertion` / `RecordOutcome` は T3 で作る（`ListPage` は既存の型を使う）。`JwksFetcher` / `AssertionSubjectResolver` 以降は T4。
+- ここに置くのは `UnitOfWork` へのメソッド追加と `PurgeCounts` の変更だけ。上の `port/repository.rs` の追加とあわせて T3 で作る（`ListPage` は既存の型を使う）。`JwksFetcher` / `AssertionSubjectResolver` 以降は T4。
 - `UnitOfWork` に `fn trusted_issuers(&mut self) -> &mut dyn TrustedIssuerRepository;`、`fn subject_mappings(&mut self) -> &mut dyn SubjectMappingRepository;`、`fn used_assertions(&mut self) -> &mut dyn UsedAssertionRepository;` を追加する。
-- `PurgeCounts` に `pub used_assertions: u64` を追加する。`PurgeRepository::purge_expired(cutoff)` は `used_assertions` のうち `expires_at < cutoff` を削除する。`cutoff` は既存どおり `MaintenanceService::purge` が渡す値（`now - config.purge_grace`。server では `cleanup.grace_secs`）。`expires_at` には `exp + ASSERTION_LEEWAY` が入っているので、削除されるのは「`exp` + 60 秒 + grace」を過ぎた記録で、その時点ではアサーションは `Expired` で必ず拒否される（F-13、N-2）。
+- `PurgeCounts` に `pub used_assertions: u64` を追加する。`PurgeRepository::purge_expired(cutoff)` は `used_assertions` のうち `expires_at < cutoff` を削除する。`cutoff` は既存どおり `MaintenanceService::purge_expired` が渡す値（`now - config.purge_grace`。server では `cleanup.grace_secs`）。`expires_at` には `exp + ASSERTION_LEEWAY` が入っているので、削除されるのは「`exp` + 60 秒 + grace」を過ぎた記録で、その時点ではアサーションは `Expired` で必ず拒否される（F-13、N-2）。
+
+`crates/application/src/port/mod.rs`:
+
+- `port/repository.rs` は `pub use repository::*;` で再公開しているので、`TrustedIssuerRepository` / `SubjectMappingRepository` / `UsedAssertionRepository` / `AssertionKind` / `UsedAssertion` / `RecordOutcome` のために `pub use` を足す必要はない（T3）。`pub use store::{ListPage, PurgeCounts, StoreError, UnitOfWork, UnitOfWorkFactory};` も名前は増えないので変えない。
+- T4 で `mod jwks;`・`mod subject;` と `pub use jwks::{JwksFetchError, JwksFetcher};`・`pub use subject::{AssertionSubjectResolver, MappingTableSubjectResolver};` を足す。
 
 新規 `crates/application/src/port/jwks.rs`:
 
@@ -206,12 +214,12 @@ impl JwksResolver {
 }
 
 pub(crate) enum Freshness {
-    /// キャッシュが JWKS_CACHE_TTL 以内ならそれを使う。なければ取得するが、
-    /// 前回の取得（成功・失敗とも）から JWKS_MIN_REFETCH_INTERVAL 未満なら取得せず RefetchTooSoon。
+    /// キャッシュが有効（now - fetched_at < JWKS_CACHE_TTL）ならそれを使う。なければ取得するが、
+    /// 前回の取得（成功・失敗とも）から now - last_attempt < JWKS_MIN_REFETCH_INTERVAL なら取得せず RefetchTooSoon。
     Cached,
-    /// 前回の取得から JWKS_MIN_REFETCH_INTERVAL 以上経っていれば取り直す。
-    /// 経っていなければ TTL 以内のキャッシュを返し、TTL 以内のキャッシュがなければ RefetchTooSoon
-    /// （期限切れのキャッシュは返さない。Q-6）。
+    /// now - last_attempt >= JWKS_MIN_REFETCH_INTERVAL なら取り直す。
+    /// そうでなければ有効なキャッシュを返し、有効なキャッシュがなければ RefetchTooSoon
+    /// （期限切れのキャッシュは返さない。D-6）。
     Refresh,
 }
 
@@ -228,10 +236,13 @@ impl JwksResolver {
 }
 ```
 
-- キャッシュは `std::sync::Mutex<HashMap<JwksUri, CacheEntry>>`（`CacheEntry { keys: Option<(Arc<JwkSet>, fetched_at)>, last_attempt: OffsetDateTime }`）。tokio などの非同期ロックは使わない。application に足す依存は `komainu-jose` だけ。
+- キャッシュは `std::sync::Mutex<HashMap<JwksUri, CacheEntry>>`（`CacheEntry { keys: Option<(Arc<JwkSet>, fetched_at)>, last_attempt: Option<OffsetDateTime>, fetching: usize }`）。tokio などの非同期ロックは使わない。application に足す依存は `komainu-jose` だけ。
+- 有効判定: `now - fetched_at < JWKS_CACHE_TTL` なら有効（ちょうど TTL で無効。T+3600 秒で再取得する受け入れ条件と同じ）。再取得の可否: `now - last_attempt >= JWKS_MIN_REFETCH_INTERVAL` なら取得してよい。
+- `JwksResolver` は `Clone` にしない。`Dependencies` には `jwks: Arc<JwksResolver>` で持たせ、`Dependencies` の `Clone` はこの `Arc` を共有する（キャッシュは 1 つ）。
 - `fetch` の成功本文は `JwkSet::from_json` でパースし、失敗または鍵 0 個なら `InvalidJwks`（キャッシュは更新しない、`last_attempt` は更新する）。
-- ロックは `await` をまたいで持たない（ロック → 判定 → 解放 → fetch → ロック → 書き込み）。同じ URI への同時取得の重複は許す。
-- 取得失敗時は `last_attempt` だけ更新し、既存のキャッシュは消さないが返しもしない（Q-6）。
+- ロックは `await` をまたいで持たない（ロック → 判定・`fetching` を 1 増やす → 解放 → fetch → ロック → 書き込み・`fetching` を 1 減らす）。終わりの書き込みは drop されるガードで行い、取得中に future が捨てられても `fetching` を戻す。`last_attempt` と `fetched_at` には取得を始めた時刻を入れる。重なった取得では、始めた時刻の新しい方の鍵を残す。
+- 取得失敗時は `last_attempt` だけ更新し、既存のキャッシュは消さないが返しもしない（D-6）。
+- 同じ URI の取得が進行中（`fetching > 0`）なら、`Refresh` は「前回から間もない」と同じ扱いにする（有効な鍵があれば返し、なければ `RefetchTooSoon`）。未知の `kid` による取得の積み増しを防ぐため。`Cached` で有効な鍵がない要求は、進行中の取得があっても取りに行く（起動直後や TTL 切れの正規の要求を失敗させないため。重複は許す）。
 - エントリー数の上限は設けない（URI はクライアント登録数で抑えられる）。
 
 ### verify_assertion（`crates/application/src/assertion/verify.rs`）
@@ -241,8 +252,8 @@ pub(crate) struct Expected<'a> {
     pub issuer: &'a str,
     /// Some なら sub がこの値と一致しなければならない（クライアント認証では client_id）。
     pub subject: Option<&'a str>,
-    /// [issuer, "{issuer}/token"]。
-    pub audiences: [&'a str; 2],
+    /// [issuer, "{issuer}/token"]。/revoke でのクライアント認証では "{issuer}/revoke" も加える。
+    pub audiences: &'a [&'a str],
 }
 
 pub(crate) struct VerifiedAssertion {
@@ -263,7 +274,9 @@ pub(crate) fn verify_assertion(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AssertionError {
     Malformed, KeyNotFound, Signature, Issuer, Audience, Expired, NotYetValid,
-    LifetimeTooLong, MissingSubject, SubjectMismatch, MissingJti,
+    LifetimeTooLong, MissingSubject, SubjectMismatch,
+    /// jti が欠落・空・255 バイト超（長さ超過を含む）。
+    MissingJti,
 }
 impl AssertionError {
     /// 監査の reason。"malformed", "key_not_found", "signature", "issuer", "audience",
@@ -280,7 +293,7 @@ application はデータを持たない（キャッシュはメモリのみ）�
 
 ### verify_assertion の手順
 
-1. `jose::jwt::decode::<NoCustomClaims>(token, keys, &Validation::new(expected.issuer, audiences[0]).accept_audience(audiences[1]).leeway(ASSERTION_LEEWAY).max_token_len(ASSERTION_MAX_LEN), now)`。alg は jose が RS256 / ES256 以外（`none`、`HS*` を含む）を拒否する。`typ` は要求しない。
+1. `jose::jwt::decode::<NoCustomClaims>(token, keys, &Validation::new(expected.issuer, audiences[0])` に残りの要素を `.accept_audience(..)` で足し、`.leeway(ASSERTION_LEEWAY).max_token_len(ASSERTION_MAX_LEN), now)`。alg は jose が RS256 / ES256 以外（`none`、`HS*` を含む）を拒否する。`typ` は要求しない。
 2. jose のエラーを写す（`JoseError` の全バリアント）:
 
 | `JoseError` | `AssertionError` | reason |
@@ -295,12 +308,12 @@ application はデータを持たない（キャッシュはメモリのみ）�
 
 `JoseError` は `#[non_exhaustive]`（`crates/jose/src/error.rs:6`）なので、表のバリアントを列挙したうえで末尾に `_ => Malformed` を置く（jose に将来足されるバリアントは `malformed` になる）。`InvalidClaim("iat")` は `iat` の型不正でも出るが、区別せず `NotYetValid` とする。
 3. `sub` がない・空 → `MissingSubject`。`expected.subject` があり不一致 → `SubjectMismatch`。
-4. `jti` がない、空、255 バイト超 → `MissingJti`。
+4. `jti` がない、空、255 バイト超 → `MissingJti`（長さ超過も `missing_jti` にする。意図どおり）。
 5. `exp - now > ASSERTION_MAX_LIFETIME` → `LifetimeTooLong`（境界: ちょうど 300 秒は通す）。
 
 ### クライアント認証（`TokenService::authenticate_client` の `Assertion` 分岐）
 
-既存の失敗処理（uow を捨て、新しい uow で `client.authentication_failed` を記録し、`TokenError::InvalidClient { basic_attempted: false }`）を使う。監査の details は `method = "private_key_jwt"`、`client_id_presented`（`truncate_chars` 64、既存どおり値がなければ文字列 `"null"`）、`reason`。`reason` は `Assertion` 分岐の失敗にだけ付け、既存の `PublicId` / `Basic` / `Post` 分岐の監査 details は変えない（N-5）。
+既存の失敗処理（uow を捨て、新しい uow で `client_authentication.failed`（`AuditKind::ClientAuthenticationFailed`）を記録し、`TokenError::InvalidClient { basic_attempted: false }`）を使う。監査の details は `method = "private_key_jwt"`、`client_id_presented`（`truncate_chars` 64、既存どおり値がなければ文字列 `"null"`）、`reason`。`reason` は `Assertion` 分岐の失敗にだけ付け、既存の `PublicId` / `Basic` / `Post` 分岐の監査 details は変えない（N-5）。
 
 | 順 | 処理 | 失敗時の応答 | 監査 reason |
 |---|---|---|---|
@@ -311,7 +324,10 @@ application はデータを持たない（キャッシュはメモリのみ）�
 | 4 | `ClientId::try_new(iss)` → `clients().find` → 存在・`is_active`・`auth_method() == PrivateKeyJwt` | 401 `invalid_client` | `unknown_client`（`try_new` 失敗も含む） / `client_disabled` / `method_not_allowed` |
 | 5 | 鍵: `Jwks` は `JwkSet::from_json`、`JwksUri` は `jwks.keys(uri, Freshness::Cached)` | 401 `invalid_client` | `invalid_jwks`（`KeyResolveError::InvalidJwks` も） / `key_fetch_failed`（`KeyResolveError::Fetch(_)` のすべての種類、fetcher なし、`Cached` での `RefetchTooSoon` を含む） |
 | 6 | `verify_assertion`（`Expected { issuer: iss, subject: Some(iss), audiences }`）。`JwksUri` で `KeyNotFound` なら `jwks.keys(uri, Freshness::Refresh)` で取り直して 1 回だけ再検証。`Refresh` が `RefetchTooSoon` なら再検証せず `key_not_found`、取り直しが失敗なら `key_fetch_failed`、再検証の失敗はその `reason()` | 401 `invalid_client` | `AssertionError::reason()` |
-| 7 | `used_assertions().record(ClientAuthentication, iss, jti, exp + ASSERTION_LEEWAY)` が `Replayed` | 401 `invalid_client` | `replay` |
+| 7 | 新しい uow で `used_assertions().record(ClientAuthentication, iss, jti, exp + ASSERTION_LEEWAY)` が `Replayed`。`Recorded` ならその uow を commit する（D-3） | 401 `invalid_client` | `replay` |
+| 8 | 要求の uow を開き、`clients().find` で読み直して手順 4 と同じ確認をする。`keys()` が手順 4 で読んだものと違えば拒否する | 401 `invalid_client` | 手順 4 と同じ / `client_changed` |
+
+手順 4 の読み出しは読み取り専用の uow で行い、手順 5 の前に捨てる。鍵の取得（手順 5、6）の間は DB のトランザクションを開かない（D-5）。そのため `authenticate_client` は uow を受け取らず、自分で開いた要求の uow を返す。
 
 body の `client_id` は省略してよい（RFC 7523 §3）。省略時はアサーションの `iss`（= `sub`）をクライアント ID として扱う。
 
@@ -319,15 +335,42 @@ body の `client_id` は省略してよい（RFC 7523 §3）。省略時はア�
 
 既存の `PublicId` / `Basic` / `Post` の分岐は、`auth_method() == PrivateKeyJwt` のクライアントに対して既存の失敗処理（details は既存のまま）で失敗する（`secret_hash` がないため）。
 
-`revoke()` も `authenticate_client` を使うので、追加の変更はない（F-7）。
+### リボケーション（`TokenService::revoke`）
+
+`revoke()` も `authenticate_client` を使うが、次の 2 点を変える（F-7）。
+
+- `authenticate_client` の結果の match（`crates/application/src/token/mod.rs`）に `Err(TokenError::InvalidRequest) => return Err(RevocationError::InvalidRequest)` を `Err(_)` の前に足す（手順 3 の `client_id` と `iss` の不一致）。`RevocationError::InvalidRequest` は既存（`token/error.rs`）で、http 側（`crates/http/src/oauth_error.rs`）も 400 `invalid_request` に写し済みなので、型と http の追加はない。今のままだと `Err(_)` に落ちて 500 になる。
+- 既存の `revoke` は、トークンをパースできない・見つからない・grant がすでに無効のとき commit せずに `Ok(())` を返す。これは変えない。クライアント認証の `jti` は認証の時点で commit 済みなので（D-3）、早期 return でも記録は残る。
 
 ### jwt-bearer グラント（`TokenService::exchange`）
 
-- `grant_type` の分岐に `"urn:ietf:params:oauth:grant-type:jwt-bearer"` を加える。`config.issuer` が None なら `UnsupportedGrantType`（uow を開く前）。
+- `grant_type` の分岐に `"urn:ietf:params:oauth:grant-type:jwt-bearer"` を加える。`config.issuer` が None なら `UnsupportedGrantType`。判定は文字列から `GrantType` を決める `match` の `Some("urn:ietf:params:oauth:grant-type:jwt-bearer")` の腕で行い（`if self.deps.config.issuer.is_none() { return Err(TokenError::UnsupportedGrantType) }`）、`begin()` より前に返す。
 - クライアント認証・`supports_grant(GrantType::JwtBearer)`（なければ `UnauthorizedClient`）は既存の共通処理。
 - `request.assertion` が None → `InvalidRequest`。
 
-失敗は uow を捨て、新しい uow で監査 `assertion.rejected`（details: `issuer_presented` truncate 64、`client_id`、`reason`）を記録して `TokenError::InvalidGrant`。
+失敗は uow を捨て、新しい uow で監査 `assertion.rejected`（details: `issuer_presented` truncate 64、`client_id`、`reason`）を記録して `TokenError::InvalidGrant`。既存のステップ関数（`Step` を返す）に合わせて次の形にする。
+
+```rust
+enum Step {
+    Issued { response: TokenResponse, grant_id: GrantId, audit: Box<AuditEvent> },
+    Replay { events: Vec<AuditEvent>, grant_id: GrantId, reason: RevocationReason },
+    /// jwt-bearer のアサーション拒否。audit は assertion.rejected。
+    Rejected { audit: Box<AuditEvent> },
+}
+
+// 既存の client_credentials などと同じ形。
+async fn jwt_bearer(&self, ctx: &RequestContext, uow: &mut dyn UnitOfWork, client: &Client, request: &TokenRequest)
+    -> Result<Step, TokenError>;
+
+/// uow を drop してから新しい uow で audit を append_all → commit し、InvalidGrant を返す。
+/// begin / append / commit の失敗は TokenError::Server。
+async fn finish_rejected(&self, ctx: &RequestContext, uow: Box<dyn UnitOfWork>, audit: AuditEvent) -> TokenError;
+```
+
+- `exchange` の `match grant_type` に `GrantType::JwtBearer => self.jwt_bearer(ctx, uow.as_mut(), &client, &request).await?` を置き（今の `return Err(TokenError::UnsupportedGrantType)` を置き換える）、`match step` に `Step::Rejected { audit } => return Err(self.finish_rejected(ctx, uow, *audit).await)` を足す。
+- 下の表の失敗は `Ok(Step::Rejected { .. })` で返す。`InvalidRequest`（`assertion` なし）・`InvalidScope`・`Server` は既存どおり `Err` で返し、監査しない。
+- uow を drop しても、クライアント認証の `jti`（`private_key_jwt` のとき）は認証の時点で commit 済みなので残る（D-3）。同じクライアントアサーションの再送は `replay` になる。
+- `Step::Replay` の `finish_replay` は同じ uow で commit するが、`Rejected` は記録を残さないために uow を分ける。
 
 | 順 | 処理 | 失敗時の reason |
 |---|---|---|
@@ -339,11 +382,11 @@ body の `client_id` は省略してよい（RFC 7523 §3）。省略時はア�
 | 6 | `users().find(user_id)` が Some かつ有効 | `user_disabled`（存在しないときも同じ） |
 | 7 | `used_assertions().record(AuthorizationGrant, iss, jti, exp + ASSERTION_LEEWAY)` が `Replayed` | `replay` |
 
-続けて `client.resolve_scope(request.scope)`（失敗は既存どおり `InvalidScope`、監査なし）→ `Grant::for_jwt_bearer(new grant id, client_id, Subject::from(user_id), scope, now)` → `issue_tokens(uow, client, grant, scope, refresh = false, now)`。監査 `token.issued` の details は既存の項目に `issuer` を加える。
+`client.resolve_scope(request.scope)`（失敗は既存どおり `InvalidScope`、監査なし）は表の手順 1 より前に行う。`jti` の記録（手順 7）の後はサーバーエラーでしか失敗しないようにするため（D-3）。表の後は `Grant::for_jwt_bearer(new grant id, client_id, Subject::from(user_id), scope, now)` → `issue_tokens(uow, client, grant, scope, refresh = false, now)`。監査 `token.issued` の details は既存の項目に `issuer` を加える。
 
 ### jti の記録とトランザクション
 
-`record` は要求の uow の中で行い、要求の成功時に commit される。後続の処理で失敗して uow を捨てると記録も消える（Q-3）。
+クライアント認証の `record` は専用の uow で行い、その場で commit する。後続の処理で要求が失敗しても記録は残る。jwt-bearer のグラントアサーションの `record` は要求の uow の中で行うが、記録の後に失敗するのはサーバーエラーだけである（D-3）。
 
 ### AdminService
 
@@ -359,7 +402,8 @@ pub struct ClientView {
     // 既存フィールド
     pub keys: Option<ClientKeys>,
 }
-// RegisteredClient::secret は PrivateKeyJwt では None。
+// RegisteredClient::secret は auth_method が ClientSecretBasic / ClientSecretPost のときだけ生成する（PrivateKeyJwt と None では None）。
+// 現在の register_client は `client_type == Confidential` なら必ず生成しているので、条件を auth_method に変える。
 // update_client は ClientUpdate::keys をそのまま渡す。
 
 pub struct RegisterIssuer {
@@ -396,15 +440,16 @@ impl AdminService {
 }
 ```
 
-上の形は既存の `register_client` / `disable_client`（`ctx: &RequestContext` を取る）と `get_client` / `list_clients`（`_ctx` を取るが使わない）に揃えてある。
+上の形は既存の `register_client` / `disable_client`（`ctx: &RequestContext` を取る）と `get_client` / `list_clients`（`_ctx` を取るが使わない）に揃えてある。`list_issuers` / `list_subject_mappings` は `list_clients` と同じく `ListPage` を値で受け取り、`ListPage { limit: page.limit.clamp(1, 1000), ..page }` にしてから repository に `&page` を渡す。
 
-- JWKS の検査（クライアントの `ClientKeys::Jwks` と発行者の `jwks`）: `JwkSet::from_json` が成功し、読み込めた鍵（`from_json` が対応外の kty / crv / use / alg を読み飛ばした後の数）が 1〜10 個。JSON 上の要素数には別の上限を設けない（長さは `JwksDocument` の 65536 バイトで抑える）。失敗は `AdminError::InvalidJwks(String)`。文字列は jose のエラーなら `JoseError` の `Display`、鍵数なら `"expected 1 to 10 usable keys, found N"`。秘密鍵成分を含む JWK は jose が `InvalidKey("private key parameters")` で拒否する。`ClientKeys::JwksUri` は登録時に取得しない。
+- JWKS の検査（クライアントの `ClientKeys::Jwks` と発行者の `jwks`）: `JwkSet::from_json` が成功し、読み込めた鍵（`from_json` が対応外の kty / crv / use / alg を読み飛ばした後の数）が 1〜10 個。JSON 上の要素数には別の上限を設けない（長さは `JwksDocument` の 65536 バイトで抑える）。失敗は `AdminError::InvalidJwks(String)`。文字列は jose のエラーなら `JoseError` の `Display`、鍵数なら `"expected 1 to 10 usable keys, found N"`。秘密鍵成分を含む JWK は jose が `InvalidKey("private key parameters")` で拒否する。`ClientKeys::JwksUri` は登録時に取得しない。fetcher のない構成では、`ClientKeys::JwksUri` の登録・更新を `AdminError::InvalidJwks` で拒否する。
 - `register_issuer` / `update_issuer` の検査順: domain の不変条件（`allowed_clients` 1〜100 個など。`DomainError` → `AdminError::Invalid`）→ JWKS の検査 → クライアントの実在。
 - `register_issuer` / `update_issuer` の `allowed_clients` は全員が実在すること。いなければ `AdminError::UnknownClient(ClientId)`（最初に見つかった 1 つ）。操作対象（発行者）の不在ではなく入力値の誤りなので `NotFound`（終了コード 3）ではなく終了コード 2 にする。
 - `map_subject`: 発行者がなければ `NotFound`、`users().find_by_username` がなければ `NotFound`。無効なユーザーにも対応付けはできる（グラント時に拒否される）。`unmap_subject` は削除対象がなければ `NotFound`。
 - 監査: `issuer.registered` / `issuer.updated` / `issuer.disabled` / `issuer.enabled`（`IssuerEvent` から）、`issuer.subject_mapped`（details: `issuer`、`subject` truncate 64、`user_id`）、`issuer.subject_unmapped`（details: `issuer`、`subject` truncate 64）。
 
-`AdminError` に追加: `InvalidJwks(String)`、`UnknownClient(ClientId)`。どちらも `#[error(...)]` を付け、CLI では終了コード 2。
+`AdminError` に追加: T6 で `InvalidJwks(String)`、T7 で `UnknownClient(ClientId)`。どちらも `#[error(...)]` を付け、CLI では終了コード 2。`AdminError` を網羅 match する `admin_exit`（`crates/server/src/cli/mod.rs`）にも同じタスクで足す。
+
 
 ### AuditKind（`crates/application/src/audit.rs`）
 
@@ -459,16 +504,16 @@ None の 2 行は既存と同じ値。T6 の時点では Some の行の `grant_t
 検証:
 
 - `now` = T、`exp` = T+60 の正しいアサーションは通る。`exp` = T+300 は通り、T+301 は `LifetimeTooLong`。`exp` = T-59 は通り、T-60 は `Expired`。
-- `aud` が `https://as.example.com`、`https://as.example.com/token`、両方を含む配列のどれでも通る。`https://as.example.com/revoke` は `Audience`。
-- `sub` なし → `MissingSubject`、`jti` なし・空・256 バイト → `MissingJti`。
+- `aud` が `https://as.example.com`、`https://as.example.com/token`、両方を含む配列のどれでも通る。`https://as.example.com/revoke` はトークンエンドポイントでは `Audience`、/revoke では通る。issuer を末尾 `/` 付きで設定しても同じ aud で通る。
+- `sub` なし → `MissingSubject`、`jti` なし・空・256 バイト → `MissingJti`。255 バイトは通る。
 - `alg=none` と `HS256` のヘッダーは通らない。RS256 鍵と ES256 鍵の両方で通る。
 
 JWKS キャッシュ（`StaticJwksFetcher` は呼び出し回数を数える）:
 
-- 同じ URI を 2 回 `Cached` で引くと fetch 1 回。T+3600 秒で引くと 2 回目の fetch。
+- 同じ URI を 2 回 `Cached` で引くと fetch 1 回。T+3599 秒の `Cached` は fetch しない。T+3600 秒で引くと 2 回目の fetch（`now - fetched_at < JWKS_CACHE_TTL` の境界）。
 - 取得から 59 秒後の `Refresh` は fetch せずキャッシュを返す。60 秒後は fetch する。
 - キャッシュなしで fetch が `Timeout` を返すと `KeyResolveError::Fetch(Timeout)`。
-- TTL 内のキャッシュがある状態で `Refresh` の fetch が `Timeout` を返すと `KeyResolveError::Fetch(Timeout)`、その直後の `Cached` は TTL 内のキャッシュを返す（失敗はキャッシュを消さない）。TTL 切れ後の `Cached` で fetch が失敗すると、古いキャッシュは返さず `Fetch`（Q-6）。その 59 秒後の `Cached` は fetch せず `RefetchTooSoon`、60 秒後は fetch する。
+- TTL 内のキャッシュがある状態で `Refresh` の fetch が `Timeout` を返すと `KeyResolveError::Fetch(Timeout)`、その直後の `Cached` は TTL 内のキャッシュを返す（失敗はキャッシュを消さない）。TTL 切れ後の `Cached` で fetch が失敗すると、古いキャッシュは返さず `Fetch`（D-6）。その 59 秒後の `Cached` は fetch せず `RefetchTooSoon`、60 秒後は fetch する。
 - TTL 切れのキャッシュだけがあり前回取得から 60 秒未満の `Refresh` は `RefetchTooSoon`。
 - fetcher が None の `JwksResolver` は `KeyResolveError::Fetch(JwksFetchError::Transport("no fetcher configured"))` を返す。
 
@@ -478,18 +523,26 @@ JWKS キャッシュ（`StaticJwksFetcher` は呼び出し回数を数える）:
 - 同じアサーションで 2 回 `client_credentials` を要求すると、2 回目は `InvalidClient`、reason `replay`。
 - `jwks_uri` のクライアントで、キャッシュにない `kid` のアサーションを取得 60 秒後に送ると fetch が 1 回増えて成功する。
 - `revoke` に正しいアサーションで成功、不正で `RevocationError::InvalidClient`。
+- 未発行トークンの `revoke` を同じアサーションで 2 回送ると、1 回目は `Ok(())`、2 回目は `RevocationError::InvalidClient`（reason `replay`）。トークンが見つかり grant がすでに無効な場合も同じ。
+- `revoke` で body の `client_id` とアサーションの `iss` が不一致なら `RevocationError::InvalidRequest`（http では 400 `invalid_request`）。
 - `issuer` 未設定の `ApplicationConfig` では、正しいアサーションでも `InvalidClient`（reason `not_configured`）。
-- `StaticJwksFetcher` に未設定の URI（`Status(404)`）でも、fetcher なしの `TestEnv` でも、`jwks_uri` のクライアントの監査 reason は `key_fetch_failed`。
+- `StaticJwksFetcher` に未設定の URI（`Status(404)`）なら、`jwks_uri` のクライアントの監査 reason は `key_fetch_failed`。fetcher なしの `TestEnv` では `jwks_uri` のクライアントを登録できない。同じ URI の取得が進行中なら `Refresh` は取得を重ねず、`Cached` で有効な鍵がない要求は取りに行く。取得中に future が捨てられても、後の `Refresh` は止まらない。
 
 グラント:
 
 - F-10、F-11 の各ケース。成功時 `TokenResponse::refresh_token` は None、`verify_access_token` の `subject` は `Subject::from(user_id)`、grant の origin は `JwtBearer`。
+- `private_key_jwt` のクライアントが jwt-bearer で拒否された（例: `sub` の対応付けなし）あと、同じクライアントアサーションで再送すると `InvalidClient`（reason `replay`）。scope が不正な要求は `InvalidScope` になり、グラントアサーションの `jti` は記録されないので、同じグラントアサーションを新しいクライアントアサーションで送り直すと成功する。監査 `assertion.rejected` は 1 件残る。
+- `client_credentials` で scope が不正（`InvalidScope`）だった要求のクライアントアサーションを再送すると `InvalidClient`（reason `replay`）。
 - 対応付けたユーザーを `disable_user` で無効化すると、jwt-bearer で発行済みのグラントも既存の仕組みで失効する（`list_active_by_subject`）。
 - `AssertionSubjectResolver` を常に固定ユーザーを返すフェイクに差し替えると、対応表なしで成功する。
 
 管理・能力:
 
-- `register_client` に `PrivateKeyJwt` と鍵 11 個の JWKS → `InvalidJwks`。`register_issuer` に存在しないクライアント → `UnknownClient`、同じ id を 2 回 → `Conflict`。
+- `register_client` に `PrivateKeyJwt` → `RegisteredClient::secret` が None。`Confidential` で `ClientSecretBasic` / `ClientSecretPost` → Some（既存どおり）。
+- 発行者が 2 件あるとき、`list_issuers` に `limit = 0` を渡すと 1 件返る（`clamp(1, 1000)`。`list_clients` と同じ）。
+
+- `register_client` に `PrivateKeyJwt` と鍵 11 個の JWKS → `InvalidJwks`。
+`register_issuer` に存在しないクライアント → `UnknownClient`、同じ id を 2 回 → `Conflict`。
 - `capabilities.rs`: `issuer` 未設定なら既存と同じ値。設定時は上記の並びで、`allow_public_clients = true` なら `[ClientSecretBasic, ClientSecretPost, PrivateKeyJwt, None]`。
 
 ## 実装メモ

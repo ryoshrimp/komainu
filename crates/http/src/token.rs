@@ -3,7 +3,7 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use komainu_application::{TokenError, TokenRequest};
+use komainu_application::{GRANT_TYPE_JWT_BEARER, TokenError, TokenRequest};
 use serde::Serialize;
 
 use crate::client_auth::client_authentication;
@@ -28,6 +28,7 @@ fn grant_type_label(grant_type: Option<&str>) -> &'static str {
         Some("authorization_code") => "authorization_code",
         Some("client_credentials") => "client_credentials",
         Some("refresh_token") => "refresh_token",
+        Some(GRANT_TYPE_JWT_BEARER) => "jwt_bearer",
         _ => "other",
     }
 }
@@ -77,5 +78,20 @@ pub(crate) async fn token(
             http
         }
         Err(error) => failure(label, &error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grant_type_labels_include_jwt_bearer() {
+        assert_eq!(
+            grant_type_label(Some("urn:ietf:params:oauth:grant-type:jwt-bearer")),
+            "jwt_bearer"
+        );
+        assert_eq!(grant_type_label(Some("password")), "other");
+        assert_eq!(grant_type_label(None), "other");
     }
 }

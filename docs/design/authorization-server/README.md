@@ -1,7 +1,7 @@
 # komainu 認可サーバー（RFC 6749 コア）設計書
 
 - 状態: 草案
-- 最終更新: 2026-11-24
+- 最終更新: 2026-11-28
 - 関連: [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749)、[ddd-toolkit](https://github.com/ryoshrimp/ddd-toolkit)（0.5.0 時点）
 
 ## 1. 概要
@@ -23,7 +23,7 @@ komainu は Rust で書く OAuth 2.0 認可サーバーである。今回の段�
 
 - やること
   - 認可エンドポイント（`response_type=code` のみ）、トークンエンドポイント（`authorization_code` / `client_credentials` / `refresh_token`）
-  - クライアント認証: `client_secret_basic`（必須）と `client_secret_post`（クライアントごとに許可）
+  - クライアント認証: `client_secret_basic`（必須）と `client_secret_post`（クライアントごとに許可）。`private_key_jwt`（RFC 7523 §2.2）は後から足した（[assertion 設計書](../assertion/README.md)）
   - リソースオーナーの認証: port で抽象化する。既定実装として ID/パスワードの内蔵ユーザーストア、ログイン画面、ログインセッションを持つ
   - 同意画面と、同意内容の記憶（クライアントごとに同意を省略する設定も持つ）
   - リフレッシュトークンのローテーションと、再利用を検知したときの系列ごとの失効
@@ -34,7 +34,7 @@ komainu は Rust で書く OAuth 2.0 認可サーバーである。今回の段�
   - PostgreSQL アダプタ（sqlx）
 - やらないこと
   - OIDC、JWT アクセストークン（RFC 9068）、Introspection / Revocation エンドポイント、RFC 7591、メタデータ（RFC 8414）
-  - Implicit グラント（§4.2）、Resource Owner Password Credentials グラント（§4.3）、拡張グラント（§4.5）
+  - Implicit グラント（§4.2）、Resource Owner Password Credentials グラント（§4.3）、拡張グラント（§4.5。JWT bearer（RFC 7523 §2.1）だけは後から足した）
   - 管理用の REST API と UI（RFC 7591 を実装した後で検討する）
   - リダイレクト型の外部 IdP 連携（SAML、外部 OIDC など）。認証 port は「ユーザー名とパスワードを検証する」形に限る
   - PostgreSQL 以外の DB アダプタ（テスト用のインメモリ実装は公開しない内部 crate として持つ）
@@ -413,7 +413,7 @@ RFC 6749 コアの後に足していく機能の順番。上から順に進め�
 | 済 | JOSE クレート `komainu-jose`（JWS / JWK / JWT）。[設計書](../jose/README.md) | 0.1.0-alpha.3 で実装済み |
 | 済 | PKCE（RFC 7636）。[設計書](../pkce/README.md) | 次のリリースで実装済み（Unreleased） |
 | 済 | 認可サーバーメタデータ（RFC 8414）。[設計書](../authorization-server-metadata/README.md) | 次のリリースで実装済み（Unreleased） |
-| 3 | JWT アサーションによるクライアント認証（`private_key_jwt`）と認可グラント（RFC 7521 / 7523）。[#19](https://github.com/ryoshrimp/komainu/issues/19) | 未着手。決定事項は Issue に記載 |
+| 済 | JWT アサーションによるクライアント認証（`private_key_jwt`）と認可グラント（RFC 7521 / 7523）。[設計書](../assertion/README.md)、[#19](https://github.com/ryoshrimp/komainu/issues/19) | 次のリリースで実装済み（Unreleased） |
 | 未定 | JWT アクセストークン（RFC 9068）、OIDC、Introspection（RFC 7662）、Dynamic Client Registration（RFC 7591） | 順番は未定 |
 | 保留 | SAML 2.0 アサーション（RFC 7522） | 保留。XML 署名の検証が要るため。需要が出たら RFC 7521 の共通部分に足す |
 | 4 | 認可応答の `iss` パラメータ（RFC 9207）と `authorization_response_iss_parameter_supported` | 未着手 |

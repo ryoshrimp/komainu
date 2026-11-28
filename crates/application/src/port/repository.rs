@@ -4,8 +4,8 @@
 
 use komainu_domain::{
     AccessToken, AuthorizationCode, AuthorizationRequest, AuthorizationRequestId, Client, ClientId,
-    Consent, Grant, GrantId, LoginSession, RefreshToken, Subject, TokenHash, User, UserId,
-    Username,
+    Consent, ExternalSubject, Grant, GrantId, IssuerId, LoginSession, RefreshToken, Subject,
+    SubjectMapping, TokenHash, TrustedIssuer, User, UserId, Username,
 };
 use time::OffsetDateTime;
 
@@ -118,7 +118,8 @@ pub trait AuditLogRepository: Send {
 pub trait PurgeRepository: Send {
     /// Deletes authorization requests, codes, access tokens, refresh tokens and login
     /// sessions with `expires_at <= cutoff`, then grants with `created_at <= cutoff` that no
-    /// access token, refresh token or authorization code refers to.
+    /// access token, refresh token or authorization code refers to. Used assertions are
+    /// deleted when `expires_at < cutoff` (strictly before).
     fn purge_expired(
         &mut self,
         cutoff: OffsetDateTime,
@@ -128,4 +129,90 @@ pub trait PurgeRepository: Send {
         &mut self,
         cutoff: OffsetDateTime,
     ) -> BoxFuture<'_, Result<u64, StoreError>>;
+}
+
+pub trait TrustedIssuerRepository: Send {
+    fn find(&mut self, id: &IssuerId) -> BoxFuture<'_, Result<Option<TrustedIssuer>, StoreError>>;
+    /// Like `find`, but takes a row lock until the unit of work ends.
+    fn find_for_update(
+        &mut self,
+        id: &IssuerId,
+    ) -> BoxFuture<'_, Result<Option<TrustedIssuer>, StoreError>>;
+    /// Returns `StoreError::Conflict` when the ID is taken.
+    fn insert(&mut self, issuer: &TrustedIssuer) -> BoxFuture<'_, Result<(), StoreError>>;
+    /// Replaces the issuer, including its allowed clients.
+    fn update(&mut self, issuer: &TrustedIssuer) -> BoxFuture<'_, Result<(), StoreError>>;
+    /// Issuers ordered by ID ascending.
+    fn list(
+        &mut self,
+        page: &ListPage<IssuerId>,
+    ) -> BoxFuture<'_, Result<Vec<TrustedIssuer>, StoreError>>;
+}
+
+pub trait SubjectMappingRepository: Send {
+    fn find(
+        &mut self,
+        issuer_id: &IssuerId,
+        subject: &ExternalSubject,
+    ) -> BoxFuture<'_, Result<Option<SubjectMapping>, StoreError>>;
+    /// Inserts the mapping, or overwrites `user_id` and `updated_at` of the existing one.
+    fn upsert(&mut self, mapping: &SubjectMapping) -> BoxFuture<'_, Result<(), StoreError>>;
+    /// Returns whether a mapping was deleted.
+    fn delete(
+        &mut self,
+        issuer_id: &IssuerId,
+        subject: &ExternalSubject,
+    ) -> BoxFuture<'_, Result<bool, StoreError>>;
+    /// Mappings of one issuer ordered by subject ascending.
+    fn list_by_issuer(
+        &mut self,
+        issuer_id: &IssuerId,
+        page: &ListPage<ExternalSubject>,
+    ) -> BoxFuture<'_, Result<Vec<SubjectMapping>, StoreError>>;
+}
+
+/// Where an assertion was presented. Part of the replay key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AssertionKind {
+    ClientAuthentication,
+    AuthorizationGrant,
+}
+
+impl AssertionKind {
+    /// The string stored in databases.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ClientAuthentication => "client_authentication",
+            Self::AuthorizationGrant => "authorization_grant",
+        }
+    }
+}
+
+/// An assertion `jti` to remember until `expires_at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsedAssertion {
+    pub kind: AssertionKind,
+    /// The client ID for `ClientAuthentication`, the assertion's `iss` for
+    /// `AuthorizationGrant`.
+    pub issuer: String,
+    /// The assertion's `jti` (1 to 255 bytes).
+    pub jti: String,
+    /// The assertion's `exp` plus `ASSERTION_LEEWAY`.
+    pub expires_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordOutcome {
+    Recorded,
+    Replayed,
+}
+
+pub trait UsedAssertionRepository: Send {
+    /// Records `(kind, issuer, jti)`. Returns `Replayed` when it is already recorded,
+    /// including expired records that are not purged yet. When units of work race on the
+    /// same key, exactly one of them gets `Recorded`.
+    fn record(
+        &mut self,
+        assertion: &UsedAssertion,
+    ) -> BoxFuture<'_, Result<RecordOutcome, StoreError>>;
 }

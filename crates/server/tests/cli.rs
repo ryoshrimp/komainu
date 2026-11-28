@@ -247,3 +247,234 @@ async fn cli_each_admin_command_adds_one_audit_row() {
         );
     }
 }
+
+const JWKS: &str = r#"{"keys":[{"kty":"EC","crv":"P-256","kid":"k1","x":"MKBCTNIcKUSDii11ySs3526iDZ8AiTo7Tu6KPAqv7D4","y":"4Etl6SRW2YiLUrN5vfvVHuhp7x8PxltmWWlbbM4IFyM"}]}"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_private_key_jwt_client_create_show_and_misuse() {
+    let env = env().await;
+    let dir = std::env::temp_dir().join(format!("komainu-cli-jwks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("jwks.json");
+    std::fs::write(&file, JWKS).unwrap();
+    let path = file.to_str().unwrap();
+    let mut args = create_args("read");
+    args.extend(["--auth-method", "private_key_jwt"]);
+
+    let with_file = [args.clone(), vec!["--jwks-file", path]].concat();
+    let created = env.run(&with_file);
+    assert_eq!(created.status.code(), Some(0));
+    let out = common::stdout(&created);
+    assert!(!out.contains("client_secret"), "{out}");
+    let id = field(&out, "client_id").to_owned();
+    let shown = common::stdout(&env.run(&["client", "show", &id]));
+    assert_eq!(field(&shown, "auth_method"), "private_key_jwt");
+    assert_eq!(field(&shown, "keys"), "jwks (1 keys)");
+    let json = common::stdout(&env.run(&["client", "show", &id, "--output", "json"]));
+    assert!(
+        json.contains("\"type\": \"jwks\"") || json.contains("\"type\":\"jwks\""),
+        "{json}"
+    );
+
+    let by_uri = [
+        args.clone(),
+        vec!["--jwks-uri", "https://client.example.com/jwks"],
+    ]
+    .concat();
+    assert_eq!(env.run(&by_uri).status.code(), Some(0));
+
+    // Neither, both, or keys with a secret method.
+    assert_eq!(env.run(&args).status.code(), Some(2));
+    let both = [
+        args.clone(),
+        vec![
+            "--jwks-file",
+            path,
+            "--jwks-uri",
+            "https://client.example.com/jwks",
+        ],
+    ]
+    .concat();
+    assert_eq!(env.run(&both).status.code(), Some(2));
+    let secret_with_keys = [create_args("read"), vec!["--jwks-file", path]].concat();
+    assert_eq!(env.run(&secret_with_keys).status.code(), Some(2));
+    // Unreadable file, invalid JSON, no keys, a private key.
+    let missing = [args.clone(), vec!["--jwks-file", "/nonexistent/jwks.json"]].concat();
+    assert_eq!(env.run(&missing).status.code(), Some(2));
+    for (name, text) in [
+        ("bad.json", "not json".to_owned()),
+        ("empty.json", r#"{"keys":[]}"#.to_owned()),
+        (
+            "private.json",
+            JWKS.replace("\"kid\"", "\"d\":\"AQ\",\"kid\""),
+        ),
+    ] {
+        let f = dir.join(name);
+        std::fs::write(&f, text).unwrap();
+        let bad = [args.clone(), vec!["--jwks-file", f.to_str().unwrap()]].concat();
+        assert_eq!(env.run(&bad).status.code(), Some(2), "{name}");
+    }
+    // 11 keys.
+    let keys: Vec<String> = (0..11)
+        .map(|i| {
+            JWKS.trim_start_matches(r#"{"keys":["#)
+                .trim_end_matches("]}")
+                .replace("k1", &format!("k{i}"))
+        })
+        .collect();
+    let many = dir.join("many.json");
+    std::fs::write(&many, format!(r#"{{"keys":[{}]}}"#, keys.join(","))).unwrap();
+    let eleven = [args.clone(), vec!["--jwks-file", many.to_str().unwrap()]].concat();
+    assert_eq!(env.run(&eleven).status.code(), Some(2));
+    // A plain http jwks_uri.
+    let http = [
+        args.clone(),
+        vec!["--jwks-uri", "http://client.example.com/jwks"],
+    ]
+    .concat();
+    assert_eq!(env.run(&http).status.code(), Some(2));
+    // rotate-secret does not apply.
+    assert_eq!(
+        env.run(&["client", "rotate-secret", &id]).status.code(),
+        Some(2)
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_issuer_lifecycle_and_exit_codes() {
+    let env = env().await;
+    let dir = std::env::temp_dir().join(format!("komainu-cli-issuer-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("jwks.json");
+    std::fs::write(&file, JWKS).unwrap();
+    let path = file.to_str().unwrap();
+    let created = env.run(&[
+        "client",
+        "create",
+        "--name",
+        "demo",
+        "--grant-type",
+        "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "--scope",
+        "read",
+    ]);
+    assert_eq!(created.status.code(), Some(0));
+    let client = field(&common::stdout(&created), "client_id").to_owned();
+    let idp = "https://idp.example.org";
+
+    // create: ok, duplicate (4), unknown client (2), no client (2), bad JWKS (2).
+    let create = |id: &str, client: &str| {
+        env.run(&[
+            "issuer",
+            "create",
+            "--issuer",
+            id,
+            "--jwks-file",
+            path,
+            "--client",
+            client,
+        ])
+    };
+    let out = create(idp, &client);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(create(idp, &client).status.code(), Some(4));
+    let unknown = "00000000-0000-7000-8000-000000000000";
+    assert_eq!(
+        create("https://idp2.example.org", unknown).status.code(),
+        Some(2)
+    );
+    let no_client = env.run(&[
+        "issuer",
+        "create",
+        "--issuer",
+        "https://idp3.example.org",
+        "--jwks-file",
+        path,
+    ]);
+    assert_eq!(no_client.status.code(), Some(2));
+    let bad = dir.join("bad.json");
+    std::fs::write(&bad, "not json").unwrap();
+    let bad_jwks = env.run(&[
+        "issuer",
+        "create",
+        "--issuer",
+        "https://idp4.example.org",
+        "--jwks-file",
+        bad.to_str().unwrap(),
+        "--client",
+        &client,
+    ]);
+    assert_eq!(bad_jwks.status.code(), Some(2));
+    assert_eq!(env.audit("issuer.registered").await.0, 1);
+    // 101 allowed clients exceed the limit of 100.
+    let mut many = vec![
+        "issuer",
+        "create",
+        "--issuer",
+        "https://idp5.example.org",
+        "--jwks-file",
+        path,
+    ];
+    let ids: Vec<String> = (0..101)
+        .map(|i| format!("00000000-0000-7000-8000-{i:012}"))
+        .collect();
+    for id in &ids {
+        many.extend(["--client", id]);
+    }
+    assert_eq!(env.run(&many).status.code(), Some(2));
+
+    // show / list.
+    let shown = common::stdout(&env.run(&["issuer", "show", idp]));
+    assert_eq!(field(&shown, "status"), "active");
+    assert_eq!(field(&shown, "clients"), client);
+    assert_eq!(field(&shown, "keys"), "1");
+    let json = common::stdout(&env.run(&["issuer", "show", idp, "--output", "json"]));
+    assert!(json.contains("\"allowed_clients\""), "{json}");
+    assert!(common::stdout(&env.run(&["issuer", "list"])).contains(idp));
+    assert_eq!(
+        env.run(&["issuer", "show", "https://none.example.org"])
+            .status
+            .code(),
+        Some(3)
+    );
+
+    // update / disable / enable.
+    let update = env.run(&["issuer", "update", idp, "--client", &client]);
+    assert_eq!(update.status.code(), Some(0));
+    assert_eq!(env.run(&["issuer", "update", idp]).status.code(), Some(2));
+    assert_eq!(env.run(&["issuer", "disable", idp]).status.code(), Some(0));
+    let shown = common::stdout(&env.run(&["issuer", "show", idp]));
+    assert_eq!(field(&shown, "status"), "disabled");
+    assert_eq!(env.run(&["issuer", "enable", idp]).status.code(), Some(0));
+
+    // map-subject / list-subjects / unmap-subject.
+    let map = |user: &str| {
+        env.run(&[
+            "issuer",
+            "map-subject",
+            idp,
+            "--subject",
+            "ext-1",
+            "--username",
+            user,
+        ])
+    };
+    assert_eq!(map("alice").status.code(), Some(3));
+    let user = common::run(
+        &env.config,
+        &["user", "create", "alice"],
+        Some("password123"),
+    );
+    assert_eq!(user.status.code(), Some(0));
+    assert_eq!(map("alice").status.code(), Some(0));
+    assert_eq!(map("alice").status.code(), Some(0));
+    let subjects = common::stdout(&env.run(&["issuer", "list-subjects", idp]));
+    assert_eq!(subjects.lines().count(), 1, "{subjects}");
+    assert!(subjects.contains("ext-1") && subjects.contains("alice"));
+    let unmap = ["issuer", "unmap-subject", idp, "--subject", "ext-1"];
+    assert_eq!(env.run(&unmap).status.code(), Some(0));
+    assert_eq!(env.run(&unmap).status.code(), Some(3));
+    assert_eq!(env.audit("issuer.subject_mapped").await.0, 2);
+    std::fs::remove_dir_all(dir).ok();
+}

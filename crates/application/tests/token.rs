@@ -4,7 +4,7 @@ mod common;
 
 use common::*;
 use komainu_application::{AuditKind, TokenError, TokenRequest};
-use komainu_domain::{GrantType, ScopeSet};
+use komainu_domain::{ClientKeys, GrantType, ScopeSet};
 use time::Duration;
 
 /// Registers a client with all grants, a user, and returns an authorization code.
@@ -34,6 +34,7 @@ fn token_request_debug_redacts_secrets() {
         text,
         "TokenRequest { grant_type: Some(\"authorization_code\"), code: Some([REDACTED]), \
          redirect_uri: None, scope: None, refresh_token: Some([REDACTED]), code_verifier: Some([REDACTED]), \
+         assertion: None, \
          duplicated: [] }"
     );
     assert!(
@@ -645,4 +646,647 @@ fn exchange_futures_are_send() {
             .exchange(&ctx(), client.basic(), TokenRequest::default()),
     );
     assert_send(&fx.token.verify_access_token("x"));
+}
+
+// ---- private_key_jwt (F-2, F-3) ----
+
+fn cc_request() -> TokenRequest {
+    grant_request("client_credentials", Some("read"))
+}
+
+fn token_with(
+    fx: &Fixture,
+    auth: komainu_application::ClientAuthentication,
+) -> Result<komainu_application::TokenResponse, TokenError> {
+    exchange(fx, auth, cc_request())
+}
+
+#[test]
+fn private_key_jwt_authenticates_and_replay_is_rejected() {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let jwt = assertion(&fx, &key, &id, "jti-1");
+    let res = token_with(&fx, assertion_auth(Some(&id), jwt.clone())).unwrap();
+    assert_eq!(res.token_type, "Bearer");
+    // The same assertion a second time is a replay.
+    let err = token_with(&fx, assertion_auth(None, jwt)).unwrap_err();
+    assert!(matches!(
+        err,
+        TokenError::InvalidClient {
+            basic_attempted: false
+        }
+    ));
+    assert_eq!(failure_reasons(&fx), ["replay"]);
+    let event = &fx.env.store.audit_events().into_iter().last().unwrap();
+    assert_eq!(
+        event.details.get("method").map(String::as_str),
+        Some("private_key_jwt")
+    );
+}
+
+#[test]
+fn a_failed_request_keeps_the_client_assertion_jti() {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let jwt = assertion(&fx, &key, &id, "jti-1");
+    let err = exchange(
+        &fx,
+        assertion_auth(Some(&id), jwt.clone()),
+        grant_request("client_credentials", Some("unknown-scope")),
+    )
+    .unwrap_err();
+    assert!(matches!(err, TokenError::InvalidScope));
+    // The jti was committed when the client was authenticated (D-3).
+    let err = token_with(&fx, assertion_auth(Some(&id), jwt)).unwrap_err();
+    assert!(matches!(err, TokenError::InvalidClient { .. }));
+    assert_eq!(failure_reasons(&fx), ["replay"]);
+}
+
+#[test]
+fn private_key_jwt_failures_are_audited_with_a_reason() {
+    let (fx, fetcher) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let other = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let secret_client = register(&fx, confidential(&ALL_GRANTS));
+    let invalid = |r: Result<_, TokenError>| {
+        assert!(matches!(r, Err(TokenError::InvalidClient { .. })), "{r:?}")
+    };
+    let cid = id.as_inner();
+    // Signature by another key.
+    invalid(token_with(
+        &fx,
+        assertion_auth(None, assertion_with(&fx, &other, cid, cid, "a", ISSUER, 60)),
+    ));
+    // iss != sub.
+    invalid(token_with(
+        &fx,
+        assertion_auth(None, assertion_with(&fx, &key, cid, "x", "b", ISSUER, 60)),
+    ));
+    // Unknown client.
+    invalid(token_with(
+        &fx,
+        assertion_auth(
+            None,
+            assertion_with(&fx, &key, "nobody", "nobody", "c", ISSUER, 60),
+        ),
+    ));
+    // Wrong audience.
+    invalid(token_with(
+        &fx,
+        assertion_auth(
+            None,
+            assertion_with(&fx, &key, cid, cid, "d", "https://x", 60),
+        ),
+    ));
+    // Not a JWT.
+    invalid(token_with(&fx, assertion_auth(None, "garbage".to_owned())));
+    // A client using another method.
+    let sid = secret_client.id.as_inner();
+    invalid(token_with(
+        &fx,
+        assertion_auth(None, assertion_with(&fx, &key, sid, sid, "e", ISSUER, 60)),
+    ));
+    assert_eq!(
+        failure_reasons(&fx),
+        [
+            "signature",
+            "subject_mismatch",
+            "unknown_client",
+            "audience",
+            "malformed",
+            "method_not_allowed"
+        ]
+    );
+    // Disabled client.
+    block_on(fx.admin.disable_client(&ctx(), &id)).unwrap();
+    invalid(token_with(
+        &fx,
+        assertion_auth(None, assertion_with(&fx, &key, cid, cid, "f", ISSUER, 60)),
+    ));
+    assert_eq!(failure_reasons(&fx).last().unwrap(), "client_disabled");
+    // No fetch happened for a jwks client.
+    assert_eq!(fetcher.calls(&jwks_uri()), 0);
+}
+
+#[test]
+fn private_key_jwt_client_id_mismatch_is_invalid_request() {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let other = register(&fx, confidential(&ALL_GRANTS));
+    let jwt = assertion(&fx, &key, &id, "j");
+    let err = token_with(&fx, assertion_auth(Some(&other.id), jwt)).unwrap_err();
+    assert!(matches!(err, TokenError::InvalidRequest));
+    assert!(failure_reasons(&fx).is_empty());
+}
+
+#[test]
+fn private_key_jwt_without_issuer_is_not_configured() {
+    let fx = Fixture::new();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let jwt = assertion(&fx, &key, &id, "j");
+    assert!(token_with(&fx, assertion_auth(None, jwt)).is_err());
+    assert_eq!(failure_reasons(&fx), ["not_configured"]);
+}
+
+#[test]
+fn jwks_uri_client_fetches_and_refreshes_on_unknown_kid() {
+    let (fx, fetcher) = assertion_fixture();
+    let old = key_with_kid("old");
+    let new = key_with_kid("new");
+    let uri = jwks_uri();
+    fetcher.set(&uri, Ok(jwks_json(&[&old])));
+    let id = register_private_key_jwt(&fx, ClientKeys::JwksUri(uri.clone()));
+    token_with(&fx, assertion_auth(None, assertion(&fx, &old, &id, "1"))).unwrap();
+    assert_eq!(fetcher.calls(&uri), 1);
+    // The key is rotated; within a minute of the last fetch no refetch is allowed.
+    fetcher.set(&uri, Ok(jwks_json(&[&new])));
+    let r = token_with(&fx, assertion_auth(None, assertion(&fx, &new, &id, "2")));
+    assert!(r.is_err());
+    assert_eq!(fetcher.calls(&uri), 1);
+    // After 60 seconds the unknown kid triggers one refetch.
+    fx.env.clock.advance(Duration::seconds(61));
+    token_with(&fx, assertion_auth(None, assertion(&fx, &new, &id, "3"))).unwrap();
+    assert_eq!(fetcher.calls(&uri), 2);
+}
+
+#[test]
+fn jwks_uri_fetch_failure_is_key_fetch_failed() {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k");
+    let id = register_private_key_jwt(&fx, ClientKeys::JwksUri(jwks_uri()));
+    // The URI has no configured response (404).
+    assert!(token_with(&fx, assertion_auth(None, assertion(&fx, &key, &id, "1"))).is_err());
+    assert_eq!(failure_reasons(&fx), ["key_fetch_failed"]);
+    // Without a fetcher such a client cannot be registered (tests/admin.rs).
+}
+
+#[test]
+fn issuer_with_a_trailing_slash_accepts_the_advertised_audiences() {
+    let (fx, _) = assertion_fixture_with_issuer(&format!("{ISSUER}/"));
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let cid = id.as_inner();
+    for (jti, aud) in [("a", ISSUER.to_owned()), ("b", format!("{ISSUER}/token"))] {
+        let jwt = assertion_with(&fx, &key, cid, cid, jti, &aud, 60);
+        token_with(&fx, assertion_auth(None, jwt)).unwrap();
+    }
+}
+
+#[test]
+fn assertion_with_token_endpoint_audience_is_accepted() {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let cid = id.as_inner();
+    let aud = format!("{ISSUER}/token");
+    let jwt = assertion_with(&fx, &key, cid, cid, "aud-token", &aud, 60);
+    token_with(&fx, assertion_auth(None, jwt)).unwrap();
+    assert!(failure_reasons(&fx).is_empty());
+}
+
+#[test]
+fn revocation_endpoint_audience_is_accepted_only_at_revoke() {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let cid = id.as_inner();
+    let aud = format!("{ISSUER}/revoke");
+    let jwt = assertion_with(&fx, &key, cid, cid, "aud-revoke-1", &aud, 60);
+    assert!(token_with(&fx, assertion_auth(None, jwt)).is_err());
+    assert_eq!(failure_reasons(&fx), ["audience"]);
+    let jwt = assertion_with(&fx, &key, cid, cid, "aud-revoke-2", &aud, 60);
+    let request = komainu_application::RevocationRequest {
+        token: Some("unknown-token".to_owned()),
+        ..komainu_application::RevocationRequest::default()
+    };
+    block_on(fx.token.revoke(&ctx(), assertion_auth(None, jwt), request)).unwrap();
+    assert_eq!(failure_reasons(&fx), ["audience"]);
+}
+
+#[test]
+fn assertion_debug_never_shows_the_body() {
+    let body = "eyJhbGciOiJFUzI1NiJ9.SECRET-BODY.sig";
+    let req = TokenRequest {
+        assertion: Some(body.to_owned()),
+        ..TokenRequest::default()
+    };
+    let text = format!("{req:?}");
+    assert!(!text.contains("SECRET-BODY"), "{text}");
+    assert!(text.contains("assertion: Some([REDACTED])"), "{text}");
+    let auth = komainu_application::ClientAuthentication::Assertion {
+        client_id: Some("c".to_owned()),
+        assertion: komainu_domain::Secret::new(body.to_owned()),
+    };
+    assert!(!format!("{auth:?}").contains("SECRET-BODY"));
+}
+
+#[test]
+fn unsigned_and_expired_assertions_are_rejected_with_reasons() {
+    use base64::Engine;
+    use komainu_application::Clock;
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let cid = id.as_inner();
+    // alg=none with every claim valid: only the missing signature can reject it.
+    let exp = fx.env.clock.now().unix_timestamp() + 60;
+    let payload =
+        format!(r#"{{"iss":"{cid}","sub":"{cid}","aud":"{ISSUER}","exp":{exp},"jti":"none-1"}}"#);
+    let none = format!(
+        "{}.{}.",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload),
+    );
+    assert!(matches!(
+        token_with(&fx, assertion_auth(Some(&id), none)),
+        Err(TokenError::InvalidClient { .. })
+    ));
+    // Expired beyond the leeway.
+    let expired = assertion_with(&fx, &key, cid, cid, "old", ISSUER, -300);
+    assert!(matches!(
+        token_with(&fx, assertion_auth(None, expired)),
+        Err(TokenError::InvalidClient { .. })
+    ));
+    let reasons = failure_reasons(&fx);
+    assert_eq!(reasons.len(), 2);
+    assert_eq!(reasons[1], "expired");
+    assert!(
+        ["malformed", "signature"].contains(&reasons[0].as_str()),
+        "{reasons:?}"
+    );
+}
+
+// ---- jwt-bearer grant (F-10, F-11) ----
+
+mod jwt_bearer {
+    use super::*;
+    use komainu_application::{ClientAuthentication, RegisterClient, RegisterIssuer};
+    use komainu_domain::{
+        ClientId, ExternalSubject, IssuerId, Subject, TrustedIssuerUpdate, UserId, Username,
+    };
+    use komainu_jose::SigningKey;
+
+    const IDP: &str = "https://idp.example.com";
+    const GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
+
+    /// A confidential client without redirect URIs (no authorization_code grant).
+    fn bearer(grant_types: &[GrantType]) -> RegisterClient {
+        RegisterClient {
+            redirect_uris: vec![],
+            ..confidential(grant_types)
+        }
+    }
+
+    struct Env {
+        fx: Fixture,
+        client: Registered,
+        key: SigningKey,
+        user_id: UserId,
+    }
+
+    fn setup() -> Env {
+        let (fx, _) = assertion_fixture();
+        let grants = [GrantType::JwtBearer, GrantType::ClientCredentials];
+        let client = register(&fx, bearer(&grants));
+        let key = key_with_kid("idp-1");
+        block_on(fx.admin.register_issuer(
+            &ctx(),
+            RegisterIssuer {
+                id: IssuerId::try_new(IDP.to_owned()).unwrap(),
+                jwks: jwks_document(&key),
+                allowed_clients: [client.id.clone()].into(),
+            },
+        ))
+        .unwrap();
+        create_user(&fx, "alice");
+        let mapping = map(&fx, "u-1", "alice");
+        Env {
+            fx,
+            client,
+            key,
+            user_id: mapping,
+        }
+    }
+
+    fn jwks_document(key: &SigningKey) -> komainu_domain::JwksDocument {
+        komainu_domain::JwksDocument::try_new(jwks_json(&[key])).unwrap()
+    }
+
+    fn map(fx: &Fixture, subject: &str, username: &str) -> UserId {
+        block_on(fx.admin.map_subject(
+            &ctx(),
+            &IssuerId::try_new(IDP.to_owned()).unwrap(),
+            ExternalSubject::try_new(subject.to_owned()).unwrap(),
+            &Username::try_new(username.to_owned()).unwrap(),
+        ))
+        .unwrap()
+        .user_id
+    }
+
+    fn request(assertion: String) -> TokenRequest {
+        TokenRequest {
+            assertion: Some(assertion),
+            ..grant_request(GRANT, None)
+        }
+    }
+
+    fn good(env: &Env, jti: &str) -> String {
+        assertion_with(&env.fx, &env.key, IDP, "u-1", jti, ISSUER, 60)
+    }
+
+    fn rejected(fx: &Fixture) -> Vec<(String, String)> {
+        fx.env
+            .store
+            .audit_events()
+            .into_iter()
+            .filter(|e| e.kind == AuditKind::AssertionRejected)
+            .map(|e| {
+                (
+                    e.details
+                        .get("issuer_presented")
+                        .cloned()
+                        .unwrap_or_default(),
+                    e.details.get("reason").cloned().unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
+    /// Resolves every subject to the user `alice`, ignoring the mapping table.
+    struct AliceResolver;
+
+    impl komainu_application::AssertionSubjectResolver for AliceResolver {
+        fn resolve<'a>(
+            &'a self,
+            uow: &'a mut dyn komainu_application::UnitOfWork,
+            _issuer: &'a komainu_domain::TrustedIssuer,
+            _subject: &'a ExternalSubject,
+        ) -> komainu_application::BoxFuture<
+            'a,
+            Result<Option<UserId>, komainu_application::StoreError>,
+        > {
+            Box::pin(async move {
+                let name = Username::try_new("alice".to_owned()).unwrap();
+                Ok(uow.users().find_by_username(&name).await?.map(|u| *u.id()))
+            })
+        }
+    }
+
+    #[test]
+    fn a_fake_subject_resolver_works_without_a_mapping_table() {
+        let test_env = komainu_testkit::TestEnv::new(config().with_issuer(ISSUER))
+            .with_subject_resolver(std::sync::Arc::new(AliceResolver));
+        let deps = test_env.deps.clone();
+        let fx = Fixture {
+            admin: komainu_application::AdminService::new(deps.clone()),
+            authz: komainu_application::AuthorizationService::new(deps.clone()),
+            token: komainu_application::TokenService::new(deps.clone()),
+            maintenance: komainu_application::MaintenanceService::new(deps),
+            env: test_env,
+        };
+        let client = register(&fx, bearer(&[GrantType::JwtBearer]));
+        let key = key_with_kid("idp-1");
+        block_on(fx.admin.register_issuer(
+            &ctx(),
+            RegisterIssuer {
+                id: IssuerId::try_new(IDP.to_owned()).unwrap(),
+                jwks: jwks_document(&key),
+                allowed_clients: [client.id.clone()].into(),
+            },
+        ))
+        .unwrap();
+        create_user(&fx, "alice");
+        let jwt = assertion_with(&fx, &key, IDP, "anyone", "j1", ISSUER, 60);
+        let res = exchange(&fx, client.basic(), request(jwt)).unwrap();
+        assert!(res.refresh_token.is_none());
+    }
+
+    #[test]
+    fn issues_an_access_token_for_the_mapped_user() {
+        let env = setup();
+        let res = exchange(&env.fx, env.client.basic(), request(good(&env, "j1"))).unwrap();
+        assert!(res.refresh_token.is_none());
+        assert_eq!(res.scope, scopes("read"));
+        let info = block_on(env.fx.token.verify_access_token(res.access_token.expose()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.subject, Some(Subject::from(env.user_id)));
+        assert_eq!(info.client_id, env.client.id);
+        let issued = env
+            .fx
+            .env
+            .store
+            .audit_events()
+            .into_iter()
+            .find(|e| e.kind == AuditKind::TokenIssued)
+            .unwrap();
+        assert_eq!(issued.details.get("issuer").map(String::as_str), Some(IDP));
+        assert_eq!(
+            issued.details.get("grant_type").map(String::as_str),
+            Some(GRANT)
+        );
+        // An explicit scope is honoured; one the client may not use is invalid_scope.
+        let mut write = request(good(&env, "j2"));
+        write.scope = Some("write".to_owned());
+        let res = exchange(&env.fx, env.client.basic(), write).unwrap();
+        assert_eq!(res.scope, scopes("write"));
+        let mut admin = request(good(&env, "j3"));
+        admin.scope = Some("admin".to_owned());
+        let err = exchange(&env.fx, env.client.basic(), admin).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidScope));
+        assert!(rejected(&env.fx).is_empty());
+    }
+
+    #[test]
+    fn rejections_are_invalid_grant_with_a_reason() {
+        let env = setup();
+        let fx = &env.fx;
+        let other = key_with_kid("idp-1");
+        let cases: Vec<(String, &str)> = vec![
+            (
+                assertion_with(fx, &other, IDP, "u-1", "a", ISSUER, 60),
+                "signature",
+            ),
+            (
+                assertion_with(fx, &env.key, IDP, "u-1", "b", "https://x", 60),
+                "audience",
+            ),
+            (
+                assertion_with(fx, &env.key, IDP, "u-1", "c", ISSUER, -300),
+                "expired",
+            ),
+            (
+                assertion_with(fx, &env.key, IDP, "nobody", "d", ISSUER, 60),
+                "unknown_subject",
+            ),
+            (
+                assertion_with(
+                    fx,
+                    &env.key,
+                    "https://other.example.com",
+                    "u-1",
+                    "e",
+                    ISSUER,
+                    60,
+                ),
+                "unknown_issuer",
+            ),
+            ("garbage".to_owned(), "malformed"),
+        ];
+        let mut expected = Vec::new();
+        for (jwt, reason) in cases {
+            let err = exchange(fx, env.client.basic(), request(jwt.clone())).unwrap_err();
+            assert!(matches!(err, TokenError::InvalidGrant), "{reason}: {err:?}");
+            let presented = match reason {
+                "unknown_issuer" => "https://other.example.com",
+                "malformed" => "",
+                _ => IDP,
+            };
+            expected.push((presented.to_owned(), reason.to_owned()));
+        }
+        // A "malformed" assertion presents no issuer: it is recorded as "null".
+        expected[5].0 = "null".to_owned();
+        assert_eq!(rejected(fx), expected);
+        // Nothing was issued and no jti of a rejected assertion was consumed.
+        assert!(!audit_kinds(fx).contains(&AuditKind::TokenIssued));
+    }
+
+    #[test]
+    fn replay_issuer_state_and_user_state_are_rejected() {
+        let env = setup();
+        let fx = &env.fx;
+        let jwt = good(&env, "r1");
+        exchange(fx, env.client.basic(), request(jwt.clone())).unwrap();
+        let err = exchange(fx, env.client.basic(), request(jwt)).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidGrant));
+        // Disabled issuer.
+        let id = IssuerId::try_new(IDP.to_owned()).unwrap();
+        block_on(fx.admin.disable_issuer(&ctx(), &id)).unwrap();
+        let err = exchange(fx, env.client.basic(), request(good(&env, "r2"))).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidGrant));
+        block_on(fx.admin.enable_issuer(&ctx(), &id)).unwrap();
+        // The issuer no longer allows the client.
+        let other = register(fx, bearer(&[GrantType::JwtBearer]));
+        block_on(fx.admin.update_issuer(
+            &ctx(),
+            &id,
+            TrustedIssuerUpdate {
+                allowed_clients: Some([other.id.clone()].into()),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        let err = exchange(fx, env.client.basic(), request(good(&env, "r3"))).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidGrant));
+        // Disabled user.
+        block_on(
+            fx.admin
+                .disable_user(&ctx(), &Username::try_new("alice".to_owned()).unwrap()),
+        )
+        .unwrap();
+        let err = exchange(fx, other.basic(), request(good(&env, "r4"))).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidGrant));
+        let reasons: Vec<_> = rejected(fx).into_iter().map(|r| r.1).collect();
+        assert_eq!(
+            reasons,
+            [
+                "replay",
+                "issuer_disabled",
+                "client_not_allowed",
+                "user_disabled"
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_assertion_and_missing_grant_are_not_audited_as_rejections() {
+        let env = setup();
+        let fx = &env.fx;
+        let err = exchange(fx, env.client.basic(), grant_request(GRANT, None)).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidRequest));
+        let secret_only = register(fx, bearer(&[GrantType::ClientCredentials]));
+        let err = exchange(fx, secret_only.basic(), request(good(&env, "m1"))).unwrap_err();
+        assert!(matches!(err, TokenError::UnauthorizedClient));
+        assert!(rejected(fx).is_empty());
+    }
+
+    #[test]
+    fn unsupported_without_an_issuer() {
+        let fx = Fixture::new();
+        let client = register(&fx, bearer(&[GrantType::ClientCredentials]));
+        let err = exchange(&fx, client.basic(), request("x".to_owned())).unwrap_err();
+        assert!(matches!(err, TokenError::UnsupportedGrantType));
+    }
+
+    #[test]
+    fn a_rejected_grant_keeps_the_client_assertion_jti() {
+        let (fx, _) = assertion_fixture();
+        let client_key = key_with_kid("c1");
+        let idp_key = key_with_kid("idp-1");
+        let client_id: ClientId = block_on(fx.admin.register_client(
+            &ctx(),
+            RegisterClient {
+                grant_types: grants(&[GrantType::JwtBearer]),
+                redirect_uris: vec![],
+                ..private_key_jwt(jwks_keys(&[&client_key]))
+            },
+        ))
+        .unwrap()
+        .client
+        .id;
+        block_on(fx.admin.register_issuer(
+            &ctx(),
+            RegisterIssuer {
+                id: IssuerId::try_new(IDP.to_owned()).unwrap(),
+                jwks: jwks_document(&idp_key),
+                allowed_clients: [client_id.clone()].into(),
+            },
+        ))
+        .unwrap();
+        create_user(&fx, "alice");
+        map(&fx, "u-1", "alice");
+        let auth = |jti: &str| -> ClientAuthentication {
+            assertion_auth(
+                Some(&client_id),
+                assertion(&fx, &client_key, &client_id, jti),
+            )
+        };
+        let bad = assertion_with(&fx, &idp_key, IDP, "nobody", "g1", ISSUER, 60);
+        let err = exchange(&fx, auth("same-client-jti"), request(bad)).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidGrant));
+        // The client assertion stays used although the request failed (D-3).
+        let ok = assertion_with(&fx, &idp_key, IDP, "u-1", "g2", ISSUER, 60);
+        let err = exchange(&fx, auth("same-client-jti"), request(ok.clone())).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidClient { .. }));
+        assert_eq!(failure_reasons(&fx), ["replay"]);
+        // A scope error is found before the grant assertion's jti is recorded.
+        let mut bad_scope = request(ok.clone());
+        bad_scope.scope = Some("unknown-scope".to_owned());
+        let err = exchange(&fx, auth("client-jti-2"), bad_scope).unwrap_err();
+        assert!(matches!(err, TokenError::InvalidScope));
+        exchange(&fx, auth("client-jti-3"), request(ok)).unwrap();
+        assert_eq!(rejected(&fx).len(), 1);
+    }
+
+    #[test]
+    fn disabling_the_user_revokes_jwt_bearer_grants() {
+        let env = setup();
+        let res = exchange(&env.fx, env.client.basic(), request(good(&env, "d1"))).unwrap();
+        block_on(
+            env.fx
+                .admin
+                .disable_user(&ctx(), &Username::try_new("alice".to_owned()).unwrap()),
+        )
+        .unwrap();
+        assert!(
+            block_on(env.fx.token.verify_access_token(res.access_token.expose()))
+                .unwrap()
+                .is_none()
+        );
+    }
 }

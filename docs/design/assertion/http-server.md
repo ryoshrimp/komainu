@@ -21,7 +21,10 @@ pub(crate) struct BodyCredentials {
 ```
 
 - 4 項目のどれかが 2 回以上出現したら、既存の `client_id` / `client_secret` と同じく `split_client_credentials` が `None` を返し、`crates/http/src/token.rs` と `revoke.rs` の既存の分岐で 400 `invalid_request` になる。`assertion`（グラント用）の重複は application の `TokenRequest::duplicated` で検出する（[application.md](application.md#clientauthentication-と-tokenrequest)）。
-- 空文字は既存と同じく無いものとして扱う。
+- 空文字は既存と同じく無いものとして扱う（`client_assertion_type` / `client_assertion` も `pop()` 後に空文字を `None` にする）。その結果片方だけになれば、下の判定順 1 で 400 `invalid_request`。
+- 付随する変更:
+  - `crates/http/src/form.rs` の `split_client_credentials`: 重複判定 `if client_id.len() > 1 || client_secret.len() > 1` に 2 項目を加え、doc コメント（"Splits a form body into `client_id`, `client_secret` and the other pairs. ..."）を 4 項目に直す。
+  - `crates/http/src/client_auth.rs`: `client_authentication` の `let BodyCredentials { client_id, client_secret } = body;` に 2 項目を足す。テストヘルパー `none()` の `BodyCredentials` リテラルに `client_assertion_type: None, client_assertion: None` を足す。`BodyCredentials` の doc コメントも更新する。
 
 `client_authentication(headers, body)` の判定順:
 
@@ -40,7 +43,7 @@ pub(crate) struct BodyCredentials {
 
 ### メトリクス（`crates/http/src/token.rs`）
 
-`grant_type_label` に `Some("urn:ietf:params:oauth:grant-type:jwt-bearer") => "jwt_bearer"` を加える。クライアント認証方式のラベルは追加しない。
+`grant_type_label` に `Some("urn:ietf:params:oauth:grant-type:jwt-bearer") => "jwt_bearer"` を加える。これは T7（jwt-bearer グラントと同じタスク）で行い、T6 では変えない。クライアント認証方式のラベルは追加しない。
 
 ### メタデータ（`crates/http/src/metadata.rs`）
 
@@ -56,7 +59,7 @@ pub struct AuthorizationServerMetadata {
 
 - 値は `ServerCapabilities::{token,revocation}_endpoint_auth_signing_algs` の既存の `Algorithm::as_str()`（`crates/jose/src/algorithm.rs:20`、`"RS256"`, `"ES256"`）。
 - `grant_types_supported` の `GrantType::JwtBearer` は `"urn:ietf:params:oauth:grant-type:jwt-bearer"`、`token_endpoint_auth_methods_supported` の `PrivateKeyJwt` は `"private_key_jwt"`（既存の `as_str` 経由）。
-- `ApplicationConfig::issuer` が未設定なら、メタデータの出力は既存と同じ（スナップショット `crates/http/src/snapshots/` が変わらない）。
+- `ApplicationConfig::issuer` が未設定なら、メタデータの出力は既存と同じ（`crates/http/tests/metadata.rs` の既存の期待 JSON が変わらない）。
 
 ## komainu facade
 
@@ -101,7 +104,9 @@ pub enum BuildError {
 - `application_config.issuer` が Some なら、その値を使う（`http_config` と違ってもよい。issuer にパスがある埋め込み向け）。
 - `http` feature がなければ、利用者が `with_issuer` しない限り None。
 
-`Dependencies` には `jwks: Arc::new(JwksResolver::new(fetcher, clock.clone()))` と `subject_resolver` を入れる。
+`Dependencies` には `jwks: Arc::new(JwksResolver::new(fetcher, clock.clone()))`（型は `Arc<JwksResolver>`。`JwksResolver` は `Clone` にしない）と `subject_resolver` を入れる。
+
+この自動設定により、`http` feature を使う既存の埋め込み利用者でもメタデータに `private_key_jwt` と署名 alg などの項目が増える。無効化する API は作らない（N-5 の例外。T8 で CHANGELOG に書く）。
 
 ## server（`crates/server`）
 
@@ -131,11 +136,12 @@ jwks_uri: Option<String>,
 | ファイルが読めない | 終了コード 2（メッセージにパス） |
 | `JwksDocument::try_new` / `JwksUri::try_new` の失敗、`AdminError::InvalidJwks` | 終了コード 2 |
 | `update` で `private_key_jwt` のクライアントに `--jwks-file` / `--jwks-uri` | 鍵を置き換える |
-| `update --auth-method` で `client_secret_*` ↔ `private_key_jwt` | `AdminError::Invalid` → 終了コード 2（Q-4） |
+| `update --auth-method` で `client_secret_*` ↔ `private_key_jwt` | `AdminError::Invalid` → 終了コード 2（D-4） |
 | `rotate-secret` を `private_key_jwt` のクライアントに | 既存の Public と同じく終了コード 2 |
+| `create --auth-method private_key_jwt` で `--type` を省略 | 既存の既定（`--type` の `default_value = "confidential"`）のまま Confidential |
 
-- `create` の出力: `private_key_jwt` ではシークレットの行を出さない（JSON では `client_secret` キーを出さない）。
-- `show` / `list` の出力（`crates/server/src/cli/output.rs`）: テキストに `keys: jwks (N keys)` / `keys: jwks_uri <URL>` / 鍵なしは行を出さない。JSON に `"keys": {"type": "jwks", "jwks": <JSON 値>}` / `{"type": "jwks_uri", "jwks_uri": "<URL>"}` / `null`。
+- `create` の出力: `private_key_jwt` ではシークレットの行を出さない（JSON では `client_secret` キーを出さない）。`output.rs` の `client_secret` はすでに `#[serde(skip_serializing_if = "Option::is_none")]` なので変更不要。シークレットを生成しないのは application の `register_client` の変更による（[application.md](application.md#adminservice)）。
+- `show` / `list` の出力（`crates/server/src/cli/output.rs`）: テキストに `keys: jwks (N keys)` / `keys: jwks_uri <URL>` / 鍵なしは行を出さない。JSON に `"keys": {"type": "jwks", "jwks": <JSON 値>}` / `{"type": "jwks_uri", "jwks_uri": "<URL>"}` / `null`。`<JSON 値>` は登録済みの JWKS 文字列を `serde_json::Value` にパースし直して埋め込む（登録時に JWKS として検証済み）。パースに失敗したら文字列のまま出す。`issuer` の `jwks` も同じ。
 
 ### CLI: `komainu issuer`（新規 `crates/server/src/cli/issuer.rs`）
 
@@ -152,7 +158,7 @@ jwks_uri: Option<String>,
 | `unmap-subject` | `<ID>`、`--subject <SUB>` | `unmap_subject` |
 | `list-subjects` | `<ID>`、`--limit <N>`（既定 100）、`--after <SUB>`、`--output` | `list_subject_mappings` |
 
-- 終了コード: 既存の `admin_exit` に `AdminError::InvalidJwks(_) | AdminError::UnknownClient(_)` → 2 を加える。`IssuerId` / `ExternalSubject` / `Username` / `ClientId` のパース失敗は 2、`NotFound` は 3、`Conflict` は 4。
+- 終了コード: 既存の `admin_exit`（`crates/server/src/cli/mod.rs`、`AdminError` の網羅 match）に `AdminError::InvalidJwks(_)` → 2 を T6 で、`AdminError::UnknownClient(_)` → 2 を T7 で加える。`IssuerId` / `ExternalSubject` / `Username` / `ClientId` のパース失敗は 2、`NotFound` は 3、`Conflict` は 4。
 - 出力: テキストは `id`、`status`、`clients`（カンマ区切り）、`keys: N`、`created_at`、`updated_at`。JSON は `{"id","status","allowed_clients":[...],"jwks":<JSON 値>,"created_at","updated_at"}`。`list-subjects` は `subject`、`username`、`user_id`、`updated_at`。時刻の形式は既存の `client show` に合わせる。
 - `disable` / `enable` / `unmap-subject` の成功時の出力は既存の `client disable` に合わせる。
 
@@ -176,11 +182,12 @@ http（`crates/http/tests/token.rs`、`revoke.rs`、`metadata.rs`。application 
 
 - F-2: 正しいアサーションの `client_credentials` が 200。`client_id` 併記で一致 200、不一致 400 `invalid_request`。
 - F-3: 署名を壊したアサーションで 401、レスポンスヘッダーに `WWW-Authenticate` がない。`client_assertion_type=urn:example:other` で 401。
-- F-4: `client_assertion` + `Authorization: Basic` で 400、`client_assertion` + `client_secret` で 400、`client_assertion` のみで 400、`client_assertion` が 2 回で 400。
-- F-7: `/revoke` に正しいアサーションで 200、不正で 401。
+- F-4: `client_assertion` + `Authorization: Basic` で 400、`client_assertion` + `client_secret` で 400、`client_assertion` のみで 400、`client_assertion` が 2 回で 400。`client_assertion_type=`（空文字）+ `client_assertion` は片方だけとみなして 400 `invalid_request`、`client_assertion=`（空文字）+ `client_assertion_type` も 400 `invalid_request`。
+- F-7: `/revoke` に正しいアサーションで 200、不正で 401。`client_id` とアサーションの `iss` が不一致なら 400 `invalid_request`。未発行トークンの revoke を同じアサーションで 2 回送ると、2 回目は 401 `invalid_client`。
 - F-10: jwt-bearer で 200、JSON に `refresh_token` がない。メトリクスのラベルが `jwt_bearer`。
 - F-11: `assertion` なしで 400 `invalid_request`、未登録発行者で 400 `invalid_grant`。
-- F-12: `issuer` 設定時、メタデータに追加項目が並ぶ（`allow_public_clients = false` で `token_endpoint_auth_methods_supported` が `["client_secret_basic","client_secret_post","private_key_jwt"]`）。未設定時は既存スナップショットと一致。
+- F-12: `issuer` 設定時、メタデータに追加項目が並ぶ（`allow_public_clients = false` で `token_endpoint_auth_methods_supported` が `["client_secret_basic","client_secret_post","private_key_jwt"]`）。未設定時は `crates/http/tests/metadata.rs` の既存の期待 JSON と一致。
+
 - N-3: `ClientAuthentication::Assertion` と `TokenRequest` の `Debug` 出力にアサーション本文が含まれない。
 
 komainu（`crates/komainu/tests/` または builder のユニットテスト）:

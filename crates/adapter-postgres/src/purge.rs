@@ -58,6 +58,9 @@ impl PurgeRepository for PgUnitOfWork {
                     cutoff,
                 )
                 .await?;
+            let used_assertions = self
+                .delete_before("DELETE FROM used_assertions WHERE expires_at < $1", cutoff)
+                .await?;
             Ok(PurgeCounts {
                 authorization_requests,
                 authorization_codes,
@@ -65,6 +68,7 @@ impl PurgeRepository for PgUnitOfWork {
                 refresh_tokens,
                 login_sessions,
                 grants,
+                used_assertions,
             })
         })
     }

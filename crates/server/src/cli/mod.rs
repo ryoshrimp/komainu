@@ -1,6 +1,7 @@
 //! Command line: argument definitions and the dispatch of the admin commands.
 
 mod client;
+mod issuer;
 mod output;
 mod user;
 
@@ -38,6 +39,9 @@ pub enum Command {
     /// Manage users of the built-in user store.
     #[command(subcommand)]
     User(user::UserCommand),
+    /// Manage trusted external assertion issuers.
+    #[command(subcommand)]
+    Issuer(issuer::IssuerCommand),
 }
 
 /// An administration command, i.e. everything except `serve` and `migrate`.
@@ -45,6 +49,7 @@ pub enum Command {
 pub enum AdminCommand {
     Client(client::ClientCommand),
     User(user::UserCommand),
+    Issuer(issuer::IssuerCommand),
 }
 
 /// Runs an administration command against `admin`.
@@ -52,6 +57,7 @@ pub(crate) async fn run_admin(admin: &AdminService, command: AdminCommand) -> Re
     match command {
         AdminCommand::Client(command) => client::run(admin, command).await,
         AdminCommand::User(command) => user::run(admin, command).await,
+        AdminCommand::Issuer(command) => issuer::run(admin, command).await,
     }
 }
 
@@ -59,9 +65,10 @@ pub(crate) async fn run_admin(admin: &AdminService, command: AdminCommand) -> Re
 fn admin_exit(error: AdminError) -> Exit {
     match error {
         AdminError::Invalid(error) => Exit::usage(error),
-        error @ (AdminError::UnknownScope(_) | AdminError::PublicClientsDisabled) => {
-            Exit::usage(error)
-        }
+        error @ (AdminError::UnknownScope(_)
+        | AdminError::PublicClientsDisabled
+        | AdminError::InvalidJwks(_)
+        | AdminError::UnknownClient(_)) => Exit::usage(error),
         AdminError::NotFound => Exit::new(3, "not found"),
         AdminError::Conflict => Exit::new(4, "already exists"),
         error @ (AdminError::PasswordHash(_) | AdminError::Store(_)) => Exit::runtime(error),

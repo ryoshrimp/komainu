@@ -51,6 +51,9 @@ pub use komainu_adapter_std as adapter_std;
 #[cfg(feature = "postgres")]
 pub use komainu_adapter_postgres as adapter_postgres;
 
+#[cfg(feature = "jwks-uri")]
+pub use komainu_adapter_http as adapter_http;
+
 #[cfg(feature = "http")]
 pub use komainu_http as http;
 

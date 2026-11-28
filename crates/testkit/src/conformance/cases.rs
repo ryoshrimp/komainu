@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use komainu_application::{
-    AuditActor, AuditEvent, AuditKind, AuditOutcome, ListPage, PurgeCounts, StoreError,
-    UnitOfWorkFactory,
+    AssertionKind, AuditActor, AuditEvent, AuditKind, AuditOutcome, ListPage, PurgeCounts,
+    RecordOutcome, StoreError, UnitOfWork, UnitOfWorkFactory, UsedAssertion,
 };
 use komainu_domain::*;
 
@@ -44,7 +44,7 @@ macro_rules! case {
     };
 }
 
-pub(super) static CASES: [StoreCase; 10] = [
+pub(super) static CASES: [StoreCase; 14] = [
     case!(client_user_session_roundtrip),
     case!(authorization_flow_records_roundtrip),
     case!(grant_revoked_by_client_request_roundtrip),
@@ -55,7 +55,18 @@ pub(super) static CASES: [StoreCase; 10] = [
     case!(purge_expired_deletes_only_expired_rows),
     case!(purge_audit_events_deletes_old_events),
     case!(concurrent_code_redemption_has_one_winner),
+    case!(private_key_jwt_client_and_jwt_bearer_grant_roundtrip),
+    case!(trusted_issuer_roundtrip),
+    case!(subject_mapping_roundtrip),
+    case!(used_assertion_replay),
 ];
+
+async fn seed_client_in(uow: &mut dyn UnitOfWork, id: &str) -> CaseResult {
+    uow.clients()
+        .insert(&Client::from_record(client_record(id)))
+        .await?;
+    Ok(())
+}
 
 async fn seed_client(store: &Store, id: &str) -> CaseResult {
     let mut uow = store.begin().await?;
@@ -548,6 +559,16 @@ async fn purge_expired_deletes_only_expired_rows(store: Store) -> CaseResult {
     uow.authorization_requests()
         .insert(&request(2, 1001))
         .await?;
+    // Used assertions are purged only when strictly older than the cutoff.
+    for (jti, expires) in [("old", 999), ("edge", 1000), ("new", 1001)] {
+        uow.used_assertions()
+            .record(&used_assertion(
+                AssertionKind::AuthorizationGrant,
+                jti,
+                expires,
+            ))
+            .await?;
+    }
     let counts = uow.purge().purge_expired(cutoff).await?;
     ensure_eq!(
         counts,
@@ -558,6 +579,7 @@ async fn purge_expired_deletes_only_expired_rows(store: Store) -> CaseResult {
             refresh_tokens: 1,
             login_sessions: 1,
             grants: 1,
+            used_assertions: 1,
         },
         "purge_expired counts"
     );
@@ -624,6 +646,25 @@ async fn purge_expired_deletes_only_expired_rows(store: Store) -> CaseResult {
             .is_some(),
         "authorization request expiring after the cutoff was purged"
     );
+    for (jti, kept) in [("old", false), ("edge", true), ("new", true)] {
+        let outcome = uow
+            .used_assertions()
+            .record(&used_assertion(
+                AssertionKind::AuthorizationGrant,
+                jti,
+                5000,
+            ))
+            .await?;
+        ensure_eq!(
+            outcome,
+            if kept {
+                RecordOutcome::Replayed
+            } else {
+                RecordOutcome::Recorded
+            },
+            format!("recording used assertion {jti:?} after purge")
+        );
+    }
     ensure!(
         uow.login_sessions().find(&hash(2)).await?.is_some(),
         "login session expiring after the cutoff was purged"
@@ -717,5 +758,281 @@ async fn concurrent_code_redemption_has_one_winner(store: Store) -> CaseResult {
     let (first, second) = tokio::join!(try_redeem(&store, 0), try_redeem(&store, 1));
     let wins = u32::from(first?) + u32::from(second?);
     ensure_eq!(wins, 1, "number of transactions that redeemed the code");
+    Ok(())
+}
+
+fn used_assertion(kind: AssertionKind, jti: &str, expires: i64) -> UsedAssertion {
+    UsedAssertion {
+        kind,
+        issuer: "https://idp.example.com".to_owned(),
+        jti: jti.to_owned(),
+        expires_at: t(expires),
+    }
+}
+
+async fn private_key_jwt_client_and_jwt_bearer_grant_roundtrip(store: Store) -> CaseResult {
+    let mut with_jwks = client_record("c1");
+    with_jwks.auth_method = TokenEndpointAuthMethod::PrivateKeyJwt;
+    with_jwks.secret_hash = None;
+    with_jwks.keys = Some(ClientKeys::Jwks(jwks_document()));
+    let mut with_uri = client_record("c2");
+    with_uri.auth_method = TokenEndpointAuthMethod::PrivateKeyJwt;
+    with_uri.secret_hash = None;
+    with_uri.keys = Some(ClientKeys::JwksUri(
+        JwksUri::try_new("https://idp.example.com/jwks".to_owned()).unwrap(),
+    ));
+    let mut grant = grant_record(1, "c1");
+    grant.origin = GrantOrigin::JwtBearer;
+    {
+        let mut uow = store.begin().await?;
+        for record in [&with_jwks, &with_uri] {
+            uow.clients()
+                .insert(&Client::from_record(record.clone()))
+                .await?;
+        }
+        uow.grants()
+            .insert(&Grant::from_record(grant.clone()))
+            .await?;
+        uow.commit().await?;
+    }
+    let mut uow = store.begin().await?;
+    for record in [with_jwks, with_uri] {
+        ensure_eq!(
+            uow.clients().find(&record.id).await?.map(|c| c.to_record()),
+            Some(record),
+            "clients().find of a private_key_jwt client"
+        );
+    }
+    ensure_eq!(
+        uow.grants().find(gid(1)).await?.map(|g| g.to_record()),
+        Some(grant),
+        "grants().find of a jwt_bearer grant"
+    );
+    Ok(())
+}
+
+async fn trusted_issuer_roundtrip(store: Store) -> CaseResult {
+    for client in ["a", "b", "c"] {
+        seed_client(&store, client).await?;
+    }
+    let first = issuer_record("https://a.example.com", &["a", "b"]);
+    {
+        let mut uow = store.begin().await?;
+        uow.trusted_issuers()
+            .insert(&TrustedIssuer::from_record(first.clone()))
+            .await?;
+        uow.commit().await?;
+    }
+    let mut uow = store.begin().await?;
+    ensure_eq!(
+        uow.trusted_issuers()
+            .find(&first.id)
+            .await?
+            .map(|i| i.to_record()),
+        Some(first.clone()),
+        "trusted_issuers().find"
+    );
+    ensure_eq!(
+        uow.trusted_issuers()
+            .find_for_update(&first.id)
+            .await?
+            .map(|i| i.to_record()),
+        Some(first.clone()),
+        "trusted_issuers().find_for_update"
+    );
+    ensure!(
+        uow.trusted_issuers()
+            .find(&issuer_id("none"))
+            .await?
+            .is_none(),
+        "trusted_issuers().find of an unknown id returned an issuer"
+    );
+    ensure!(
+        matches!(
+            uow.trusted_issuers()
+                .insert(&TrustedIssuer::from_record(first.clone()))
+                .await,
+            Err(StoreError::Conflict)
+        ),
+        "inserting an issuer with an existing id must return StoreError::Conflict"
+    );
+    drop(uow);
+
+    // update replaces the allowed clients: {a, b} -> {b, c}
+    let mut changed = first.clone();
+    changed.allowed_clients = ["b", "c"].iter().map(|c| cid(c)).collect();
+    changed.status = IssuerStatus::Disabled;
+    changed.updated_at = t(5);
+    let mut uow = store.begin().await?;
+    uow.trusted_issuers()
+        .insert(&TrustedIssuer::from_record(issuer_record(
+            "https://b.example.com",
+            &["a"],
+        )))
+        .await?;
+    uow.trusted_issuers()
+        .update(&TrustedIssuer::from_record(changed.clone()))
+        .await?;
+    ensure_eq!(
+        uow.trusted_issuers()
+            .find(&first.id)
+            .await?
+            .map(|i| i.to_record()),
+        Some(changed.clone()),
+        "trusted_issuers().find after update"
+    );
+    let page = ListPage {
+        after: None,
+        limit: 1,
+    };
+    let ids: Vec<_> = uow
+        .trusted_issuers()
+        .list(&page)
+        .await?
+        .iter()
+        .map(|i| i.to_record().id)
+        .collect();
+    ensure_eq!(
+        ids,
+        vec![first.id.clone()],
+        "trusted_issuers().list limit 1"
+    );
+    let page = ListPage {
+        after: Some(first.id.clone()),
+        limit: 10,
+    };
+    let ids: Vec<_> = uow
+        .trusted_issuers()
+        .list(&page)
+        .await?
+        .iter()
+        .map(|i| i.to_record().id)
+        .collect();
+    ensure_eq!(
+        ids,
+        vec![issuer_id("https://b.example.com")],
+        "trusted_issuers().list after the first id"
+    );
+    Ok(())
+}
+
+async fn subject_mapping_roundtrip(store: Store) -> CaseResult {
+    let issuer = issuer_id("https://a.example.com");
+    {
+        let mut uow = store.begin().await?;
+        seed_client_in(&mut *uow, "c1").await?;
+        for (n, name) in [(1, "alice"), (2, "bob")] {
+            uow.users()
+                .insert(&User::from_record(user_record(n, name)))
+                .await?;
+        }
+        uow.trusted_issuers()
+            .insert(&TrustedIssuer::from_record(issuer_record(
+                "https://a.example.com",
+                &["c1"],
+            )))
+            .await?;
+        uow.commit().await?;
+    }
+    let mut uow = store.begin().await?;
+    let first = mapping("https://a.example.com", "sub-1", 1, 0);
+    uow.subject_mappings().upsert(&first).await?;
+    ensure_eq!(
+        uow.subject_mappings()
+            .find(&issuer, &external_subject("sub-1"))
+            .await?,
+        Some(first),
+        "subject_mappings().find"
+    );
+    ensure!(
+        uow.subject_mappings()
+            .find(&issuer, &external_subject("other"))
+            .await?
+            .is_none(),
+        "subject_mappings().find of an unknown subject returned a mapping"
+    );
+    let overwritten = mapping("https://a.example.com", "sub-1", 2, 7);
+    uow.subject_mappings().upsert(&overwritten).await?;
+    ensure_eq!(
+        uow.subject_mappings()
+            .find(&issuer, &external_subject("sub-1"))
+            .await?,
+        Some(overwritten.clone()),
+        "subject_mappings().find after overwriting upsert"
+    );
+    let second = mapping("https://a.example.com", "sub-0", 1, 1);
+    uow.subject_mappings().upsert(&second).await?;
+    let page = ListPage {
+        after: None,
+        limit: 10,
+    };
+    ensure_eq!(
+        uow.subject_mappings()
+            .list_by_issuer(&issuer, &page)
+            .await?,
+        vec![second.clone(), overwritten.clone()],
+        "subject_mappings().list_by_issuer"
+    );
+    let page = ListPage {
+        after: Some(external_subject("sub-0")),
+        limit: 10,
+    };
+    ensure_eq!(
+        uow.subject_mappings()
+            .list_by_issuer(&issuer, &page)
+            .await?,
+        vec![overwritten],
+        "subject_mappings().list_by_issuer after sub-0"
+    );
+    ensure!(
+        uow.subject_mappings()
+            .delete(&issuer, &external_subject("sub-1"))
+            .await?,
+        "subject_mappings().delete of an existing mapping returned false"
+    );
+    ensure!(
+        !uow.subject_mappings()
+            .delete(&issuer, &external_subject("sub-1"))
+            .await?,
+        "subject_mappings().delete of a missing mapping returned true"
+    );
+    Ok(())
+}
+
+async fn used_assertion_replay(store: Store) -> CaseResult {
+    let grant = used_assertion(AssertionKind::AuthorizationGrant, "j1", 100);
+    let client_auth = used_assertion(AssertionKind::ClientAuthentication, "j1", 100);
+    {
+        let mut uow = store.begin().await?;
+        ensure_eq!(
+            uow.used_assertions().record(&grant).await?,
+            RecordOutcome::Recorded,
+            "first record"
+        );
+        ensure_eq!(
+            uow.used_assertions().record(&grant).await?,
+            RecordOutcome::Replayed,
+            "second record of the same key"
+        );
+        ensure_eq!(
+            uow.used_assertions().record(&client_auth).await?,
+            RecordOutcome::Recorded,
+            "record of the same issuer and jti with another kind"
+        );
+        // Dropped without commit.
+    }
+    let mut uow = store.begin().await?;
+    ensure_eq!(
+        uow.used_assertions().record(&grant).await?,
+        RecordOutcome::Recorded,
+        "record after the first unit of work was dropped"
+    );
+    uow.commit().await?;
+    let mut uow = store.begin().await?;
+    ensure_eq!(
+        uow.used_assertions().record(&grant).await?,
+        RecordOutcome::Replayed,
+        "record after the key was committed"
+    );
     Ok(())
 }

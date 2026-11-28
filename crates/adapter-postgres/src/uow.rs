@@ -4,7 +4,8 @@ use komainu_application::{
     AccessTokenRepository, AuditLogRepository, AuthorizationCodeRepository,
     AuthorizationRequestRepository, BoxFuture, ClientRepository, ConsentRepository,
     GrantRepository, LoginSessionRepository, PurgeRepository, RefreshTokenRepository, StoreError,
-    UnitOfWork, UnitOfWorkFactory, UserRepository,
+    SubjectMappingRepository, TrustedIssuerRepository, UnitOfWork, UnitOfWorkFactory,
+    UsedAssertionRepository, UserRepository,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -75,6 +76,15 @@ impl UnitOfWork for PgUnitOfWork {
         self
     }
     fn audit_log(&mut self) -> &mut dyn AuditLogRepository {
+        self
+    }
+    fn trusted_issuers(&mut self) -> &mut dyn TrustedIssuerRepository {
+        self
+    }
+    fn subject_mappings(&mut self) -> &mut dyn SubjectMappingRepository {
+        self
+    }
+    fn used_assertions(&mut self) -> &mut dyn UsedAssertionRepository {
         self
     }
     fn purge(&mut self) -> &mut dyn PurgeRepository {

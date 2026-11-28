@@ -10,10 +10,11 @@ keywords = ["oauth2", "oauth", "authorization-server", "axum", "pkce"]
 categories = ["authentication", "web-programming::http-server"]
 
 [features]
-default = ["http", "postgres", "std"]
+default = ["http", "postgres", "std", "jwks-uri"]
 http = ["dep:komainu-http", "dep:axum"]
 postgres = ["dep:komainu-adapter-postgres"]
 std = ["dep:komainu-adapter-std"]
+jwks-uri = ["dep:komainu-adapter-http"]
 
 [dependencies]
 komainu-domain.workspace = true
@@ -22,6 +23,7 @@ komainu-http = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 komainu-adapter-postgres = { workspace = true, optional = true }
 komainu-adapter-std = { workspace = true, optional = true }
+komainu-adapter-http = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [[example]]

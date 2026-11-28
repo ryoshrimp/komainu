@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use komainu_application::{ApplicationConfig, BuiltinAuthenticator, Dependencies};
+use komainu_application::{
+    ApplicationConfig, AssertionSubjectResolver, BuiltinAuthenticator, Dependencies, JwksFetcher,
+    JwksResolver, MappingTableSubjectResolver,
+};
 use time::{Date, Month};
 
 use crate::{FixedClock, InMemoryUnitOfWorkFactory, PlainPasswordHasher, SequenceRandom};
@@ -29,8 +32,26 @@ impl TestEnv {
             password_hasher: hasher.clone(),
             authenticator: Arc::new(BuiltinAuthenticator::new(hasher)),
             config: Arc::new(config),
+            jwks: Arc::new(JwksResolver::new(None, Arc::new(clock.clone()))),
+            subject_resolver: Arc::new(MappingTableSubjectResolver),
         };
         Self { deps, store, clock }
+    }
+
+    /// Replaces the JWKS resolver with one that fetches through `fetcher`
+    /// (sharing this env's clock).
+    pub fn with_jwks_fetcher(mut self, fetcher: Arc<dyn JwksFetcher>) -> Self {
+        self.deps.jwks = Arc::new(JwksResolver::new(
+            Some(fetcher),
+            Arc::new(self.clock.clone()),
+        ));
+        self
+    }
+
+    /// Replaces the assertion subject resolver.
+    pub fn with_subject_resolver(mut self, resolver: Arc<dyn AssertionSubjectResolver>) -> Self {
+        self.deps.subject_resolver = resolver;
+        self
     }
 }
 

@@ -421,3 +421,96 @@ fn revocation_request_debug_redacts_the_token() {
     assert!(debug.contains("[REDACTED]"));
     assert!(debug.contains("access_token"));
 }
+
+// ---- private_key_jwt (F-5) ----
+
+/// A private_key_jwt client with an access token and a user's authorization.
+fn assertion_setup() -> (
+    Fixture,
+    komainu_domain::ClientId,
+    komainu_jose::SigningKey,
+    String,
+) {
+    let (fx, _) = assertion_fixture();
+    let key = key_with_kid("k1");
+    let id = register_private_key_jwt(&fx, jwks_keys(&[&key]));
+    let jwt = assertion(&fx, &key, &id, "issue");
+    let tokens = exchange(
+        &fx,
+        assertion_auth(None, jwt),
+        grant_request("client_credentials", Some("read")),
+    )
+    .unwrap();
+    let access = access_of(&tokens);
+    (fx, id, key, access)
+}
+
+#[test]
+fn assertion_revokes_and_replay_is_rejected() {
+    let (fx, id, key, access) = assertion_setup();
+    let jwt = assertion(&fx, &key, &id, "rev-1");
+    revoke(
+        &fx,
+        assertion_auth(Some(&id), jwt.clone()),
+        request(&access, None),
+    )
+    .unwrap();
+    assert!(!alive(&fx, &access));
+    let err = revoke(&fx, assertion_auth(None, jwt), request(&access, None)).unwrap_err();
+    assert!(matches!(err, RevocationError::InvalidClient { .. }));
+    assert_eq!(failure_reasons(&fx), ["replay"]);
+}
+
+#[test]
+fn assertion_jti_is_kept_even_when_nothing_is_revoked() {
+    let (fx, id, key, _) = assertion_setup();
+    // Unissued token: the early Ok path must still commit the jti.
+    let jwt = assertion(&fx, &key, &id, "rev-2");
+    revoke(
+        &fx,
+        assertion_auth(None, jwt.clone()),
+        request("unknown-token", None),
+    )
+    .unwrap();
+    let err = revoke(
+        &fx,
+        assertion_auth(None, jwt),
+        request("unknown-token", None),
+    )
+    .unwrap_err();
+    assert!(matches!(err, RevocationError::InvalidClient { .. }));
+    assert_eq!(failure_reasons(&fx), ["replay"]);
+}
+
+#[test]
+fn assertion_jti_is_kept_when_the_grant_is_already_revoked() {
+    let (fx, id, key, access) = assertion_setup();
+    revoke(
+        &fx,
+        assertion_auth(None, assertion(&fx, &key, &id, "r1")),
+        request(&access, None),
+    )
+    .unwrap();
+    let jwt = assertion(&fx, &key, &id, "r2");
+    revoke(
+        &fx,
+        assertion_auth(None, jwt.clone()),
+        request(&access, None),
+    )
+    .unwrap();
+    assert!(revoke(&fx, assertion_auth(None, jwt), request(&access, None)).is_err());
+}
+
+#[test]
+fn assertion_client_id_mismatch_is_invalid_request() {
+    let (fx, id, key, access) = assertion_setup();
+    let other = register(&fx, confidential(&ALL_GRANTS));
+    let jwt = assertion(&fx, &key, &id, "r3");
+    let err = revoke(
+        &fx,
+        assertion_auth(Some(&other.id), jwt),
+        request(&access, None),
+    )
+    .unwrap_err();
+    assert!(matches!(err, RevocationError::InvalidRequest));
+}

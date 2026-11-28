@@ -17,7 +17,7 @@ async fn in_memory_store_passes() {
 }
 
 #[test]
-fn ten_cases_with_the_documented_names() {
+fn fourteen_cases_with_the_documented_names() {
     let names: Vec<_> = store_cases().iter().map(|case| case.name).collect();
     assert_eq!(
         names,
@@ -32,6 +32,10 @@ fn ten_cases_with_the_documented_names() {
             "purge_expired_deletes_only_expired_rows",
             "purge_audit_events_deletes_old_events",
             "concurrent_code_redemption_has_one_winner",
+            "private_key_jwt_client_and_jwt_bearer_grant_roundtrip",
+            "trusted_issuer_roundtrip",
+            "subject_mapping_roundtrip",
+            "used_assertion_replay",
         ]
     );
 }
@@ -113,6 +117,15 @@ impl UnitOfWork for BrokenUow {
     }
     fn audit_log(&mut self) -> &mut dyn AuditLogRepository {
         self.inner.audit_log()
+    }
+    fn trusted_issuers(&mut self) -> &mut dyn TrustedIssuerRepository {
+        self.inner.trusted_issuers()
+    }
+    fn subject_mappings(&mut self) -> &mut dyn SubjectMappingRepository {
+        self.inner.subject_mappings()
+    }
+    fn used_assertions(&mut self) -> &mut dyn UsedAssertionRepository {
+        self.inner.used_assertions()
     }
     fn purge(&mut self) -> &mut dyn PurgeRepository {
         self.inner.purge()

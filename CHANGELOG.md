@@ -24,6 +24,41 @@ a breaking change bumps the minor version.
   endpoint takes `code_verifier` for the `authorization_code` grant.
 - Migration `0003` (applied automatically by `migrate`) adds the `code_challenge` and
   `code_challenge_method` columns to `authorization_requests` and `authorization_codes`.
+- `private_key_jwt` client authentication
+  ([RFC 7523](https://www.rfc-editor.org/rfc/rfc7523) §2.2, [RFC 7521](https://www.rfc-editor.org/rfc/rfc7521)
+  §4.2) at `/token` and `/revoke`. A client registers a JWK Set (`--jwks-file`) or a `jwks_uri`
+  (`--jwks-uri`, `https` only) and signs the assertion with RS256 or ES256. `client_assertion`
+  and `client_assertion_type` are new parameters of both endpoints.
+- The JWT bearer authorization grant `urn:ietf:params:oauth:grant-type:jwt-bearer`
+  ([RFC 7523](https://www.rfc-editor.org/rfc/rfc7523) §2.1, [RFC 7521](https://www.rfc-editor.org/rfc/rfc7521)
+  §4.1) at `/token`. A confidential client exchanges an assertion signed by a trusted issuer for
+  an access token. No refresh token is issued. The `sub` of the assertion is mapped to a user
+  through a table managed with `komainu issuer map-subject`, and can be mapped differently by
+  replacing `AssertionSubjectResolver`.
+- A request that sends `client_assertion` together with a Basic header or `client_secret`, or
+  only one of `client_assertion` and `client_assertion_type`, is answered with `invalid_request`.
+  In the jwt-bearer grant, an omitted `scope` becomes the default scopes of the client; a client
+  without default scopes must send `scope`.
+- An assertion may be valid for at most 300 seconds, is accepted once (its `jti` is remembered
+  until it expires, plus the clock skew, even when the request then fails), and must have the issuer URL or the token endpoint URL as `aud`; 60 seconds
+  of clock skew are tolerated. The limit applies to the assertion only, not to the access token.
+- `komainu issuer` commands to manage trusted external issuers: `create`, `list`, `show`,
+  `update`, `disable`, `enable`, `map-subject`, `unmap-subject` and `list-subjects`.
+  `komainu client create` and `update` take `--jwks-file` and `--jwks-uri`, and `--auth-method`
+  and `--grant-type` accept `private_key_jwt` and the jwt-bearer URN.
+- Audit events `issuer.registered`, `issuer.updated`, `issuer.disabled`, `issuer.enabled`,
+  `issuer.subject_mapped`, `issuer.subject_unmapped` and `assertion.rejected`. A failed
+  `private_key_jwt` authentication is recorded as `client_authentication.failed` with a
+  `reason`. The cleanup job deletes expired assertion records
+  (`komainu_cleanup_deleted_total{kind="used_assertions"}`).
+- The new crate `komainu-adapter-http` with `ReqwestJwksFetcher`, which fetches `jwks_uri`
+  documents (public addresses only, no redirects, 5 seconds, 64 KiB). The `komainu` facade enables
+  it with the new `jwks-uri` feature (on by default), and `KomainuBuilder::jwks_fetcher` and
+  `KomainuBuilder::subject_resolver` replace the fetcher and the subject resolver.
+- Migration `0004` (applied automatically by `migrate`) allows the `private_key_jwt` auth method
+  and the `jwt_bearer` grant origin, adds the `jwks` and `jwks_uri` columns to `clients`, and
+  creates the `trusted_issuers`, `trusted_issuer_clients`, `issuer_subjects` and `used_assertions`
+  tables. It does not delete rows.
 
 ### Changed
 
@@ -41,6 +76,34 @@ a breaking change bumps the minor version.
   wildcard arm no longer compiles.
 - A store adapter outside this repository must save and read `pkce` for authorization requests and
   codes. The `authorization_flow_records_roundtrip` case of `komainu-testkit` checks this.
+- The `komainu` facade with the `http` feature sets `ApplicationConfig::issuer` from
+  `server.public_base_url` when it is unset. So the metadata now lists `private_key_jwt` in
+  `token_endpoint_auth_methods_supported` and `revocation_endpoint_auth_methods_supported`, the
+  jwt-bearer URN in `grant_types_supported`, and `RS256` and `ES256` in
+  `token_endpoint_auth_signing_alg_values_supported` and
+  `revocation_endpoint_auth_signing_alg_values_supported`. There is no setting to turn this off.
+  Use `ApplicationConfig::with_issuer` when you build the use cases yourself.
+- `ClientAuthentication` has a new variant `Assertion`, `TokenEndpointAuthMethod` has
+  `PrivateKeyJwt`, `GrantType` has `JwtBearer` and `GrantOrigin` has `JwtBearer`. They are
+  exhaustive, so a `match` without a wildcard arm no longer compiles.
+- `PurgeCounts` has a new field `used_assertions`. Code that builds it with a struct literal must
+  set the new field.
+- `ServerCapabilities` has the new fields `token_endpoint_auth_signing_algs` and
+  `revocation_endpoint_auth_signing_algs`, and its `grant_types` and auth method lists include
+  `JwtBearer` and `PrivateKeyJwt` when `ApplicationConfig::issuer` is set. The struct is
+  `#[non_exhaustive]`, so only code that compares the lists is affected.
+- `AdminError` has new variants `InvalidJwks` and `UnknownClient`. The CLI exits with 2 for both.
+  It is exhaustive, so a `match` without a wildcard arm no longer compiles.
+- `TokenRequest` has a new field `assertion` for the jwt-bearer grant. Code that builds it with a
+  struct literal must set the new field.
+- `AuditKind` has new variants for the `issuer.*` events, `issuer.subject_mapped`,
+  `issuer.subject_unmapped` and `assertion.rejected`. It is exhaustive, so a `match` without a
+  wildcard arm no longer compiles.
+- `UnitOfWork` has new methods `trusted_issuers`, `subject_mappings` and `used_assertions`, and
+  `Dependencies` has new fields `jwks` and `subject_resolver`. The client registration and update
+  types and the client records have a new `keys` field. A store adapter outside this repository
+  must implement the new repositories and save the keys. The `komainu-testkit` conformance suite
+  checks this.
 
 ## [0.1.0-alpha.3] - 2026-11-24
 

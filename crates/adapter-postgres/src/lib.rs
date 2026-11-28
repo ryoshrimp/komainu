@@ -16,7 +16,10 @@ mod grant;
 mod purge;
 mod refresh_token;
 mod session;
+mod subject_mapping;
+mod trusted_issuer;
 mod uow;
+mod used_assertion;
 mod user;
 
 use std::borrow::Cow;
@@ -88,7 +91,14 @@ pub async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         include_str!("../migrations/0003_pkce.sql").into_sql_str(),
         false,
     );
-    Migrator::with_migrations(vec![init, client_request, pkce])
+    let assertion = Migration::new(
+        4,
+        Cow::Borrowed("assertion"),
+        MigrationType::Simple,
+        include_str!("../migrations/0004_assertion.sql").into_sql_str(),
+        false,
+    );
+    Migrator::with_migrations(vec![init, client_request, pkce, assertion])
         .run(pool)
         .await
         .map_err(|e| StoreError::Other(format!("migration failed: {e}")))

@@ -19,6 +19,7 @@ pub async fn run_once(service: &MaintenanceService) -> Result<PurgeReport, Store
                 ("refresh_tokens", counts.refresh_tokens),
                 ("login_sessions", counts.login_sessions),
                 ("grants", counts.grants),
+                ("used_assertions", counts.used_assertions),
                 ("audit_events", report.audit_events),
             ];
             for (kind, deleted) in kinds {
@@ -32,6 +33,7 @@ pub async fn run_once(service: &MaintenanceService) -> Result<PurgeReport, Store
                 refresh_tokens = counts.refresh_tokens,
                 login_sessions = counts.login_sessions,
                 grants = counts.grants,
+                used_assertions = counts.used_assertions,
                 audit_events = report.audit_events,
                 "cleanup finished"
             );

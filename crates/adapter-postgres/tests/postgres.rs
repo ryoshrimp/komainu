@@ -179,9 +179,12 @@ async fn corrupted_enum_value_is_other() {
 fn service(db: &TestDb) -> komainu_application::TokenService {
     use std::sync::Arc;
     let hasher = Arc::new(komainu_testkit::PlainPasswordHasher);
+    let clock: Arc<dyn komainu_application::Clock> = Arc::new(komainu_adapter_std::SystemClock);
     let deps = Dependencies {
         store: Arc::new(db.factory.clone()),
-        clock: Arc::new(komainu_adapter_std::SystemClock),
+        clock: clock.clone(),
+        jwks: Arc::new(komainu_application::JwksResolver::new(None, clock)),
+        subject_resolver: Arc::new(komainu_application::MappingTableSubjectResolver),
         random: Arc::new(komainu_adapter_std::OsSecureRandom),
         password_hasher: hasher.clone(),
         authenticator: Arc::new(BuiltinAuthenticator::new(hasher)),
@@ -318,9 +321,12 @@ async fn tokens_are_stored_hashed_only() {
         name: ScopeToken::try_new("read".to_owned()).unwrap(),
         description: "read".to_owned(),
     }]);
+    let clock: Arc<dyn komainu_application::Clock> = Arc::new(komainu_adapter_std::SystemClock);
     let deps = Dependencies {
         store: Arc::new(db.factory.clone()),
-        clock: Arc::new(komainu_adapter_std::SystemClock),
+        clock: clock.clone(),
+        jwks: Arc::new(komainu_application::JwksResolver::new(None, clock)),
+        subject_resolver: Arc::new(komainu_application::MappingTableSubjectResolver),
         random: Arc::new(komainu_adapter_std::OsSecureRandom),
         password_hasher: hasher.clone(),
         authenticator: Arc::new(BuiltinAuthenticator::new(hasher)),
@@ -342,6 +348,7 @@ async fn tokens_are_stored_hashed_only() {
                 allowed_scopes: scope("read"),
                 default_scopes: scope("read"),
                 skip_consent: true,
+                keys: None,
             },
         )
         .await
@@ -559,4 +566,88 @@ async fn concurrent_refresh_rotates_once() {
         .unwrap();
     let statuses: Vec<String> = rows.iter().map(|r| r.get("status")).collect();
     assert_eq!(statuses, ["active", "rotated"]);
+}
+
+#[tokio::test]
+async fn migrate_0004_keeps_existing_clients_and_checks_keys() {
+    let db = start_raw().await;
+    let migration = |version, name: &'static str, sql: &'static str| {
+        Migration::new(
+            version,
+            Cow::Borrowed(name),
+            MigrationType::Simple,
+            sql.into_sql_str(),
+            false,
+        )
+    };
+    Migrator::with_migrations(vec![
+        migration(1, "init", include_str!("../migrations/0001_init.sql")),
+        migration(
+            2,
+            "client_request_revocation",
+            include_str!("../migrations/0002_client_request_revocation.sql"),
+        ),
+        migration(3, "pkce", include_str!("../migrations/0003_pkce.sql")),
+    ])
+    .run(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO clients (id, name, client_type, auth_method, redirect_uris, grant_types, \
+         allowed_scopes, default_scopes, skip_consent, status, created_at, updated_at) \
+         VALUES ('c1', 'n', 'public', 'client_secret_basic', '{}', '{}', '{}', '{}', false, \
+         'active', now(), now())",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    migrate(&db.pool).await.unwrap();
+    let mut uow = db.factory.begin().await.unwrap();
+    let client = uow.clients().find(&cid("c1")).await.unwrap().unwrap();
+    assert_eq!(
+        client.to_record().auth_method,
+        TokenEndpointAuthMethod::ClientSecretBasic
+    );
+    assert!(client.to_record().keys.is_none());
+    drop(uow);
+
+    // private_key_jwt without keys violates clients_keys_check.
+    let result = sqlx::query(
+        "INSERT INTO clients (id, name, client_type, auth_method, redirect_uris, grant_types, \
+         allowed_scopes, default_scopes, skip_consent, status, created_at, updated_at) \
+         VALUES ('c2', 'n', 'confidential', 'private_key_jwt', '{}', '{}', '{}', '{}', false, \
+         'active', now(), now())",
+    )
+    .execute(&db.pool)
+    .await;
+    let error = result.unwrap_err();
+    let db_error = error.as_database_error().expect("database error");
+    assert_eq!(db_error.code().as_deref(), Some("23514"));
+    assert_eq!(db_error.constraint(), Some("clients_keys_check"));
+}
+
+#[tokio::test]
+async fn concurrent_used_assertion_record_has_one_winner() {
+    let db = start().await;
+    let assertion = UsedAssertion {
+        kind: AssertionKind::AuthorizationGrant,
+        issuer: "https://idp.example.com".to_owned(),
+        jti: "j1".to_owned(),
+        expires_at: t(100),
+    };
+    let mut first = db.factory.begin().await.unwrap();
+    let mut second = db.factory.begin().await.unwrap();
+    assert_eq!(
+        first.used_assertions().record(&assertion).await.unwrap(),
+        RecordOutcome::Recorded
+    );
+    // The second insert waits for the first unit of work to finish.
+    let racing = tokio::spawn(async move {
+        let outcome = second.used_assertions().record(&assertion).await.unwrap();
+        second.commit().await.unwrap();
+        outcome
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    first.commit().await.unwrap();
+    assert_eq!(racing.await.unwrap(), RecordOutcome::Replayed);
 }

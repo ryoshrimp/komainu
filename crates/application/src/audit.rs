@@ -80,6 +80,13 @@ pub enum AuditKind {
     TokenIssued,
     ClientAuthenticationFailed,
     TokenRevocationClientMismatch,
+    IssuerRegistered,
+    IssuerUpdated,
+    IssuerDisabled,
+    IssuerEnabled,
+    SubjectMapped,
+    SubjectUnmapped,
+    AssertionRejected,
 }
 
 impl AuditKind {
@@ -107,6 +114,13 @@ impl AuditKind {
             Self::TokenIssued => "token.issued",
             Self::ClientAuthenticationFailed => "client_authentication.failed",
             Self::TokenRevocationClientMismatch => "token_revocation.client_mismatch",
+            Self::IssuerRegistered => "issuer.registered",
+            Self::IssuerUpdated => "issuer.updated",
+            Self::IssuerDisabled => "issuer.disabled",
+            Self::IssuerEnabled => "issuer.enabled",
+            Self::SubjectMapped => "issuer.subject_mapped",
+            Self::SubjectUnmapped => "issuer.subject_unmapped",
+            Self::AssertionRejected => "assertion.rejected",
         }
     }
 }
