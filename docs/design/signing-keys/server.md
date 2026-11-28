@@ -167,6 +167,6 @@ komainu key generate-encryption-key
 
 ## ドキュメント
 
-- `docs/getting-started.md` に「署名鍵を有効にする」節: 鍵暗号化鍵の生成（`komainu key generate-encryption-key`）と `KOMAINU_SIGNING__ENCRYPTION_KEY` での設定、鍵暗号化鍵を失うと保存済みの鍵が使えなくなること（そのときは `komainu key revoke` で全部消して作り直す）、`[signing]` の各キーの意味、`komainu key list|rotate|revoke`、`GET /jwks`。
+- `docs/getting-started.md` に「署名鍵を有効にする」節: 鍵暗号化鍵の生成（`komainu key generate-encryption-key`）と `KOMAINU_SIGNING__ENCRYPTION_KEY` での設定、鍵暗号化鍵を失うと保存済みの鍵が使えなくなること（そのときは、サーバーをすべて止め、新しい鍵暗号化鍵を設定し、`komainu key list` で確かめたうえで pending・retired・expired の鍵を先に、active の鍵を最後に `komainu key revoke` し、新しい鍵暗号化鍵で起動する。active を revoke すると新しい鍵暗号化鍵で暗号化した代わりの鍵が現役になる。復号できない pending・active の鍵が残る間は署名も /jwks も失敗し、古い鍵で発行したトークンは検証できなくなる）、`[signing]` の各キーの意味、`komainu key list|rotate|revoke`、`GET /jwks`。
 - 同じファイルの設定の説明に `oauth.disabled_grant_types` / `oauth.disabled_auth_methods` を足す。
 - `docs/design/authorization-server/README.md` の §8 ロードマップの表に「AS 署名鍵・JWKS・グラントと認証方式の拡張ポイント（#27） | 済 | [signing-keys](../signing-keys/README.md)」の行を足す（既存の行の書式に合わせる）。
