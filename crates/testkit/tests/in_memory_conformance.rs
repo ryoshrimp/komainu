@@ -17,7 +17,7 @@ async fn in_memory_store_passes() {
 }
 
 #[test]
-fn fourteen_cases_with_the_documented_names() {
+fn eighteen_cases_with_the_documented_names() {
     let names: Vec<_> = store_cases().iter().map(|case| case.name).collect();
     assert_eq!(
         names,
@@ -36,6 +36,10 @@ fn fourteen_cases_with_the_documented_names() {
             "trusted_issuer_roundtrip",
             "subject_mapping_roundtrip",
             "used_assertion_replay",
+            "signing_key_roundtrip_and_order",
+            "signing_key_duplicate_kid_is_conflict",
+            "signing_key_update_schedule_and_delete",
+            "signing_key_uncommitted_insert_is_invisible",
         ]
     );
 }
@@ -126,6 +130,9 @@ impl UnitOfWork for BrokenUow {
     }
     fn used_assertions(&mut self) -> &mut dyn UsedAssertionRepository {
         self.inner.used_assertions()
+    }
+    fn signing_keys(&mut self) -> &mut dyn SigningKeyRepository {
+        self.inner.signing_keys()
     }
     fn purge(&mut self) -> &mut dyn PurgeRepository {
         self.inner.purge()

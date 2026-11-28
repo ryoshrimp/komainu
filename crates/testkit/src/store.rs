@@ -23,6 +23,8 @@ pub struct InMemoryState {
     pub subject_mappings: BTreeMap<(IssuerId, ExternalSubject), SubjectMapping>,
     /// Keyed by `(kind, issuer, jti)`; the value is `expires_at`.
     pub used_assertions: BTreeMap<(AssertionKind, String, String), OffsetDateTime>,
+    /// Keyed by `kid`.
+    pub signing_keys: BTreeMap<String, ServerSigningKey>,
     pub audit_events: Vec<AuditEvent>,
 }
 
@@ -155,6 +157,9 @@ impl UnitOfWork for InMemoryUnitOfWork {
         self
     }
     fn used_assertions(&mut self) -> &mut dyn UsedAssertionRepository {
+        self
+    }
+    fn signing_keys(&mut self) -> &mut dyn SigningKeyRepository {
         self
     }
     fn purge(&mut self) -> &mut dyn PurgeRepository {
@@ -650,6 +655,53 @@ impl UsedAssertionRepository for InMemoryUnitOfWork {
             }
         };
         ready(Ok(outcome))
+    }
+}
+
+impl SigningKeyRepository for InMemoryUnitOfWork {
+    /// Does nothing: the in-memory store replaces its whole state on commit, so it cannot
+    /// serialize writers.
+    fn lock_rotation(&mut self) -> BoxFuture<'_, Result<(), StoreError>> {
+        ready(Ok(()))
+    }
+
+    fn list(&mut self) -> BoxFuture<'_, Result<Vec<ServerSigningKey>, StoreError>> {
+        let mut keys: Vec<_> = self.working.signing_keys.values().cloned().collect();
+        keys.sort_by(|a, b| {
+            (a.activates_at(), a.kid().as_inner()).cmp(&(b.activates_at(), b.kid().as_inner()))
+        });
+        ready(Ok(keys))
+    }
+
+    fn insert(&mut self, key: &ServerSigningKey) -> BoxFuture<'_, Result<(), StoreError>> {
+        ready(insert_unique(
+            &mut self.working.signing_keys,
+            key.kid().as_inner().clone(),
+            key.clone(),
+        ))
+    }
+
+    fn update_schedule(&mut self, key: &ServerSigningKey) -> BoxFuture<'_, Result<(), StoreError>> {
+        let result = match self.working.signing_keys.get_mut(key.kid().as_inner()) {
+            Some(stored) => {
+                let mut record = stored.to_record();
+                record.activates_at = key.activates_at();
+                record.retires_at = key.retires_at();
+                record.deletes_at = key.deletes_at();
+                *stored = ServerSigningKey::from_record(record);
+                Ok(())
+            }
+            None => Err(StoreError::Other("signing key not found".to_owned())),
+        };
+        ready(result)
+    }
+
+    fn delete(&mut self, kid: &SigningKeyId) -> BoxFuture<'_, Result<bool, StoreError>> {
+        ready(Ok(self
+            .working
+            .signing_keys
+            .remove(kid.as_inner())
+            .is_some()))
     }
 }
 

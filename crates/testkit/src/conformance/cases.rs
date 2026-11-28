@@ -44,7 +44,7 @@ macro_rules! case {
     };
 }
 
-pub(super) static CASES: [StoreCase; 14] = [
+pub(super) static CASES: [StoreCase; 18] = [
     case!(client_user_session_roundtrip),
     case!(authorization_flow_records_roundtrip),
     case!(grant_revoked_by_client_request_roundtrip),
@@ -59,6 +59,10 @@ pub(super) static CASES: [StoreCase; 14] = [
     case!(trusted_issuer_roundtrip),
     case!(subject_mapping_roundtrip),
     case!(used_assertion_replay),
+    case!(signing_key_roundtrip_and_order),
+    case!(signing_key_duplicate_kid_is_conflict),
+    case!(signing_key_update_schedule_and_delete),
+    case!(signing_key_uncommitted_insert_is_invisible),
 ];
 
 async fn seed_client_in(uow: &mut dyn UnitOfWork, id: &str) -> CaseResult {
@@ -1033,6 +1037,117 @@ async fn used_assertion_replay(store: Store) -> CaseResult {
         uow.used_assertions().record(&grant).await?,
         RecordOutcome::Replayed,
         "record after the key was committed"
+    );
+    Ok(())
+}
+
+async fn signing_key_roundtrip_and_order(store: Store) -> CaseResult {
+    // Inserted out of order; `B`, `b` and `a` share `activates_at`; `kid` breaks the
+    // tie in byte order (`B` < `a` < `b`), independent of the DB collation.
+    let keys = [
+        signing_key_with(SigningAlgorithm::Rs256, "c", 20, 30, 40),
+        signing_key("b", 10, 30, 40),
+        signing_key("a", 10, 30, 40),
+        signing_key("B", 10, 30, 40),
+    ];
+    let mut uow = store.begin().await?;
+    for key in &keys {
+        uow.signing_keys().insert(key).await?;
+    }
+    uow.commit().await?;
+    let mut uow = store.begin().await?;
+    let listed = uow.signing_keys().list().await?;
+    let expected = vec![
+        keys[3].clone(),
+        keys[2].clone(),
+        keys[1].clone(),
+        keys[0].clone(),
+    ];
+    ensure_eq!(listed, expected, "signing_keys().list");
+    Ok(())
+}
+
+async fn signing_key_duplicate_kid_is_conflict(store: Store) -> CaseResult {
+    let mut uow = store.begin().await?;
+    uow.signing_keys()
+        .insert(&signing_key("a", 1, 2, 3))
+        .await?;
+    uow.commit().await?;
+    let mut uow = store.begin().await?;
+    let result = uow.signing_keys().insert(&signing_key("a", 5, 6, 7)).await;
+    ensure!(
+        matches!(result, Err(StoreError::Conflict)),
+        "duplicate kid: expected Conflict, got {result:?}"
+    );
+    Ok(())
+}
+
+async fn signing_key_update_schedule_and_delete(store: Store) -> CaseResult {
+    let original = signing_key("a", 1, 2, 3);
+    let mut uow = store.begin().await?;
+    uow.signing_keys().insert(&original).await?;
+    uow.commit().await?;
+
+    // Only the three times may change, even when other fields differ.
+    let mut record = original.to_record();
+    record.activates_at = t(10);
+    record.retires_at = t(20);
+    record.deletes_at = t(30);
+    let expected = ServerSigningKey::from_record(record.clone());
+    record.sealed_private_key = SealedPrivateKey::new(vec![9, 9]).unwrap();
+    record.public_jwk = PublicJwk::try_new(r#"{"kid":"other"}"#.to_owned()).unwrap();
+    let mut uow = store.begin().await?;
+    uow.signing_keys()
+        .update_schedule(&ServerSigningKey::from_record(record))
+        .await?;
+    uow.commit().await?;
+    let mut uow = store.begin().await?;
+    ensure_eq!(
+        uow.signing_keys().list().await?,
+        vec![expected],
+        "list after update_schedule"
+    );
+
+    let result = uow
+        .signing_keys()
+        .update_schedule(&signing_key("missing", 1, 2, 3))
+        .await;
+    ensure!(
+        matches!(&result, Err(StoreError::Other(m)) if m == "signing key not found"),
+        "update_schedule of a missing key: expected Other(\"signing key not found\"), got {result:?}"
+    );
+
+    ensure!(
+        uow.signing_keys().delete(&signing_key_id("a")).await?,
+        "delete of an existing key returned false"
+    );
+    ensure!(
+        !uow.signing_keys().delete(&signing_key_id("a")).await?,
+        "second delete returned true"
+    );
+    ensure!(
+        uow.signing_keys().list().await?.is_empty(),
+        "list after delete is not empty"
+    );
+    Ok(())
+}
+
+async fn signing_key_uncommitted_insert_is_invisible(store: Store) -> CaseResult {
+    let mut writer = store.begin().await?;
+    writer
+        .signing_keys()
+        .insert(&signing_key("a", 1, 2, 3))
+        .await?;
+    let mut reader = store.begin().await?;
+    ensure!(
+        reader.signing_keys().list().await?.is_empty(),
+        "an uncommitted insert is visible to another unit of work"
+    );
+    drop(writer);
+    let mut reader = store.begin().await?;
+    ensure!(
+        reader.signing_keys().list().await?.is_empty(),
+        "a dropped insert is visible"
     );
     Ok(())
 }

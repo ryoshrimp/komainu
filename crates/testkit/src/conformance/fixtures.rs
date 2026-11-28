@@ -118,3 +118,35 @@ pub(super) fn mapping(issuer: &str, sub: &str, user: u128, at: i64) -> SubjectMa
         updated_at: t(at),
     }
 }
+
+pub(super) fn signing_key(
+    kid: &str,
+    activates: i64,
+    retires: i64,
+    deletes: i64,
+) -> ServerSigningKey {
+    signing_key_with(SigningAlgorithm::Es256, kid, activates, retires, deletes)
+}
+
+pub(super) fn signing_key_with(
+    algorithm: SigningAlgorithm,
+    kid: &str,
+    activates: i64,
+    retires: i64,
+    deletes: i64,
+) -> ServerSigningKey {
+    ServerSigningKey::from_record(ServerSigningKeyRecord {
+        kid: SigningKeyId::try_new(kid.to_owned()).unwrap(),
+        algorithm,
+        sealed_private_key: SealedPrivateKey::new(vec![1, 2, 3, 4]).unwrap(),
+        public_jwk: PublicJwk::try_new(format!(r#"{{"kid":"{kid}"}}"#)).unwrap(),
+        created_at: t(0),
+        activates_at: t(activates),
+        retires_at: t(retires),
+        deletes_at: t(deletes),
+    })
+}
+
+pub(super) fn signing_key_id(s: &str) -> SigningKeyId {
+    SigningKeyId::try_new(s.to_owned()).unwrap()
+}

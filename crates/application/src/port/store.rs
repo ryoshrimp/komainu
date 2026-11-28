@@ -35,6 +35,7 @@ pub trait UnitOfWork: Send {
     fn trusted_issuers(&mut self) -> &mut dyn TrustedIssuerRepository;
     fn subject_mappings(&mut self) -> &mut dyn SubjectMappingRepository;
     fn used_assertions(&mut self) -> &mut dyn UsedAssertionRepository;
+    fn signing_keys(&mut self) -> &mut dyn SigningKeyRepository;
     fn purge(&mut self) -> &mut dyn PurgeRepository;
     fn commit(self: Box<Self>) -> BoxFuture<'static, Result<(), StoreError>>;
 }
